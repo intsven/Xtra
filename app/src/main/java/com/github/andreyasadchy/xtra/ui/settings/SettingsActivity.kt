@@ -1454,6 +1454,20 @@ class SettingsActivity : AppCompatActivity() {
                 IntegrityDialog.newInstance(null).show(childFragmentManager, null)
                 true
             }
+            findPreference<Preference>("copy_fcm_token")?.setOnPreferenceClickListener {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        val token = task.result
+                        val clipboard = requireContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        val clip = android.content.ClipData.newPlainText("FCM Token", token)
+                        clipboard.setPrimaryClip(clip)
+                        android.widget.Toast.makeText(requireContext(), "FCM token copied to clipboard", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        android.widget.Toast.makeText(requireContext(), "Failed to get FCM token", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+                true
+            }
             val httpEngine = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7
             val cronet = CronetProvider.getAllProviders(requireContext()).any { it.isEnabled }
             if (!httpEngine || !cronet) {

@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.text.format.Formatter
+import android.util.Log
 import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
@@ -581,7 +582,7 @@ class MainActivity : AppCompatActivity() {
         if (prefs.getBoolean(C.ENABLE_INTEGRITY, false) && TwitchApiHelper.isIntegrityTokenExpired(this)) {
             getNewIntegrityToken(null, supportFragmentManager)
         }
-        if (prefs.getBoolean(C.LIVE_NOTIFICATIONS_ENABLED, false)) {
+        if (prefs.getBoolean(C.LIVE_NOTIFICATIONS_POLLING, false)) {
             WorkManager.getInstance(this).enqueueUniquePeriodicWork(
                 "live_notifications",
                 ExistingPeriodicWorkPolicy.KEEP,
@@ -594,6 +595,7 @@ class MainActivity : AppCompatActivity() {
                     .build()
             )
         }
+        syncNotificationChannelsToServer()
     }
 
     private fun setNavBarColor(isPortrait: Boolean) {
@@ -1366,6 +1368,68 @@ class MainActivity : AppCompatActivity() {
                     putString(C.UI_THEME_ROUNDED_CORNERS, "2")
                 }
                 putInt(C.SETTINGS_VERSION, 12)
+            }
+        }
+    }
+
+    private fun syncNotificationChannelsToServer() {
+        val serverUrl = prefs.getString(C.LIVE_NOTIFICATIONS_SERVER_URL, null)
+        if (serverUrl.isNullOrBlank()) {
+            Log.e("XtraFCM", "No server URL set")
+            return
+        }
+        Log.e("XtraFCM", "Server URL: $serverUrl")
+        val xtraModule = (application as com.github.andreyasadchy.xtra.XtraApp).xtraModule
+        val dao = xtraModule.database.notificationUsers()
+        lifecycleScope.launch {
+            try {
+                val channelIds = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    dao.getAll().map { it.channelId }
+                }
+                Log.e("XtraFCM", "DB channels: ${channelIds.size} $channelIds")
+                if (channelIds.isEmpty()) return@launch
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                    .addOnCompleteListener { task ->
+                        if (!task.isSuccessful) {
+                            Log.e("XtraFCM", "Failed to get FCM token: ${task.exception}")
+                            return@addOnCompleteListener
+                        }
+                        val fcmToken = task.result
+                        val userToken = tokenPrefs().getString(C.TOKEN, null)
+                        Log.e("XtraFCM", "Sending ${channelIds.size} channels to server...")
+                        lifecycleScope.launch {
+                            try {
+                                val json = org.json.JSONObject()
+                                json.put("channel_ids", org.json.JSONArray(channelIds))
+                                json.put("fcm_token", fcmToken)
+                                if (userToken != null) {
+                                    json.put("user_token", userToken)
+                                }
+                                val helixClientId = prefs.getString(C.HELIX_CLIENT_ID, "ilfexgv3nnljz3isbm257gzwrzr7bi")
+                                json.put("client_id", helixClientId)
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    val url = java.net.URL("$serverUrl/api/channels")
+                                    val conn = url.openConnection() as java.net.HttpURLConnection
+                                    conn.requestMethod = "POST"
+                                    conn.setRequestProperty("Content-Type", "application/json")
+                                    conn.doOutput = true
+                                    conn.connectTimeout = 5000
+                                    conn.readTimeout = 5000
+                                    conn.outputStream.write(json.toString().toByteArray())
+                                    conn.outputStream.flush()
+                                    conn.outputStream.close()
+                                    val responseCode = conn.responseCode
+                                    val responseBody = conn.inputStream.bufferedReader().readText()
+                                    Log.e("XtraFCM", "Server response: $responseCode - $responseBody")
+                                    conn.disconnect()
+                                }
+                            } catch (e: Exception) {
+                                Log.e("XtraFCM", "Failed to sync channels to server: ${e.message}", e)
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e("XtraFCM", "Failed to get channel IDs: ${e.message}", e)
             }
         }
     }

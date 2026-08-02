@@ -575,6 +575,12 @@
     <string name="notification_live_channel_title">Live notifications</string>
     <string name="live_notification">%s is live</string>
     <string name="live_notifications">Live notifications</string>
+    <string name="live_notifications_polling">Polling fallback</string>
+    <string name="live_notifications_polling_summary">Uses more battery. Only needed if PC server is offline.</string>
+    <string name="live_notifications_server_url">PC server URL</string>
+    <string name="live_notifications_server_url_summary">e.g. http://192.168.1.100:5000</string>
+    <string name="copy_fcm_token">Copy FCM token</string>
+    <string name="copy_fcm_token_summary">For PC server configuration</string>
     <string name="sleep_timer_lock_screen">Lock screen after sleep timer is done</string>
     <string name="sleep_timer_time_picker">Use Material time picker for sleep timer</string>
     <string name="stop_sleep_timer_message">Stop sleep timer?</string>

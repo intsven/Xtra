@@ -266,6 +266,8 @@ object C {
     const val UPDATE_CHECK_FREQUENCY = "update_check_frequency"
     const val UPDATE_USE_BROWSER = "update_use_browser"
     const val LIVE_NOTIFICATIONS_ENABLED = "live_notifications_enabled"
+    const val LIVE_NOTIFICATIONS_POLLING = "live_notifications_polling"
+    const val LIVE_NOTIFICATIONS_SERVER_URL = "live_notifications_server_url"
     const val NETWORK_LIBRARY = "network_library"
     const val PLAYER = "player"
     const val DEBUG_CHAT_FULL_MSG = "debug_chat_fullmsg"

@@ -44,3 +44,12 @@
 -keep class androidx.navigation.fragment.NavHostFragment {
     *;
 }
+
+# Firebase
+-keep class com.google.firebase.messaging.** { *; }
+-keep class com.google.firebase.iid.** { *; }
+-keep class com.google.firebase.components.** { *; }
+-dontwarn com.google.firebase.messaging.**
+
+# Xtra sync
+-keep class com.github.andreyasadchy.xtra.ui.main.MainActivity { private syncNotificationChannelsToServer(); }

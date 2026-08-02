@@ -103,4 +103,11 @@
         app:iconSpaceReserved="false"
         app:singleLineTitle="false" />
 
+    <Preference
+        android:key="copy_fcm_token"
+        android:title="@string/copy_fcm_token"
+        android:summary="@string/copy_fcm_token_summary"
+        app:iconSpaceReserved="false"
+        app:singleLineTitle="false" />
+
 </androidx.preference.PreferenceScreen>

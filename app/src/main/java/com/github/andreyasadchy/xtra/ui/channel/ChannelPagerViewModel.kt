@@ -180,6 +180,7 @@ class ChannelPagerViewModel(
                     } else {
                         _notificationsEnabled.value = true
                         notifications.value = Pair(true, errorMessage)
+                        notificationsRepository.saveUser(NotificationUser(channelId))
                         if (notificationsEnabled) {
                             _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
                                 notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
@@ -219,6 +220,7 @@ class ChannelPagerViewModel(
                     } else {
                         _notificationsEnabled.value = false
                         notifications.value = Pair(false, errorMessage)
+                        notificationsRepository.deleteUser(NotificationUser(channelId))
                     }
                 } else {
                     notificationsRepository.deleteUser(NotificationUser(channelId))

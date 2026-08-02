@@ -183,18 +183,20 @@ class ChannelPagerFragment : BaseNetworkFragment(), Scrollable, FragmentHost, In
                                             ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
                                         }
                                         viewModel.updateNotifications(requireContext().prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP), TwitchApiHelper.getGQLHeaders(requireContext(), true), TwitchApiHelper.getHelixHeaders(requireContext()))
-                                        WorkManager.getInstance(requireContext()).enqueueUniquePeriodicWork(
-                                            "live_notifications",
-                                            ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
-                                            PeriodicWorkRequestBuilder<LiveNotificationWorker>(15, TimeUnit.MINUTES)
-                                                .setInitialDelay(1, TimeUnit.MINUTES)
-                                                .setConstraints(
-                                                    Constraints.Builder()
-                                                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                                                        .build()
-                                                )
-                                                .build()
-                                        )
+                                        if (requireContext().prefs().getBoolean(C.LIVE_NOTIFICATIONS_POLLING, false)) {
+                                            WorkManager.getInstance(requireContext()).enqueueUniquePeriodicWork(
+                                                "live_notifications",
+                                                ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
+                                                PeriodicWorkRequestBuilder<LiveNotificationWorker>(15, TimeUnit.MINUTES)
+                                                    .setInitialDelay(1, TimeUnit.MINUTES)
+                                                    .setConstraints(
+                                                        Constraints.Builder()
+                                                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                                                            .build()
+                                                    )
+                                                    .build()
+                                            )
+                                        }
                                         requireContext().prefs().edit { putBoolean(C.LIVE_NOTIFICATIONS_ENABLED, true) }
                                     }
                                 }

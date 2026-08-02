@@ -39,6 +39,7 @@ import com.github.andreyasadchy.xtra.util.NetworkUtils.executeAsync
 import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import com.github.andreyasadchy.xtra.util.m3u8.PlaylistUtils
 import com.github.andreyasadchy.xtra.util.m3u8.Segment
+import com.github.andreyasadchy.xtra.util.prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -445,18 +446,20 @@ class SettingsViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             if (enabled) {
                 notificationsRepository.getNewStreams(networkLibrary, gqlHeaders, helixHeaders)
-                WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
-                    "live_notifications",
-                    ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
-                    PeriodicWorkRequestBuilder<LiveNotificationWorker>(15, TimeUnit.MINUTES)
-                        .setInitialDelay(1, TimeUnit.MINUTES)
-                        .setConstraints(
-                            Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.CONNECTED)
-                                .build()
-                        )
-                        .build()
-                )
+                if (applicationContext.prefs().getBoolean(C.LIVE_NOTIFICATIONS_POLLING, false)) {
+                    WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+                        "live_notifications",
+                        ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
+                        PeriodicWorkRequestBuilder<LiveNotificationWorker>(15, TimeUnit.MINUTES)
+                            .setInitialDelay(1, TimeUnit.MINUTES)
+                            .setConstraints(
+                                Constraints.Builder()
+                                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                                    .build()
+                            )
+                            .build()
+                    )
+                }
             } else {
                 WorkManager.getInstance(applicationContext).cancelUniqueWork("live_notifications")
             }
