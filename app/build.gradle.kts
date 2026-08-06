@@ -29,7 +29,7 @@ android {
         minSdk = 23
         targetSdk = 37
         versionCode = 121
-        versionName = "2.56.2"
+        versionName = "2.58.5"
     }
 
     buildTypes {
@@ -71,6 +71,7 @@ dependencies {
     implementation(libs.firebase.messaging)
 
     implementation("com.google.guava:guava:33.3.1-android") // exoplayer
+    compileOnly("com.google.j2objc:j2objc-annotations:3.0.0") // OkHttpDataSource SettableFuture
     implementation("com.google.android.gms:play-services-cronet:18.1.0")
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("com.google.mlkit:translate:17.0.3")
@@ -83,7 +84,7 @@ dependencies {
     implementation(libs.appcompat)
     implementation(libs.constraintlayout)
     implementation(libs.coordinatorlayout)
-    implementation(libs.core.ktx)
+    implementation(libs.core)
     implementation(libs.fragment.ktx)
     implementation(libs.lifecycle.service)
     implementation(libs.lifecycle.viewmodel)

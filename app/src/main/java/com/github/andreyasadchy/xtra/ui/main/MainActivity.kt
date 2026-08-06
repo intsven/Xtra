@@ -21,6 +21,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.os.ext.SdkExtensions
 import android.text.format.Formatter
 import android.util.Log
 import android.view.Menu
@@ -99,6 +100,7 @@ import com.github.andreyasadchy.xtra.util.tokenPrefs
 import com.google.android.material.color.MaterialColors
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import org.chromium.net.CronetProvider
 import java.util.Timer
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.schedule
@@ -450,7 +452,7 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
         pipActionReceiver = pipReceiver
-        if (prefs.getString(C.PLAYER, C.EXOPLAYER) == C.MEDIA_PLAYER || prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+        if (prefs.getString(C.PLAYER, C.EXOPLAYER) == C.MEDIA_PLAYER || prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
                     viewModel.playbackStates.collectLatest { states ->
@@ -475,6 +477,20 @@ class MainActivity : AppCompatActivity() {
         }
         restorePlayerFragment()
         handleIntent(intent)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.videoUrl.collectLatest { videoUrl ->
+                    if (videoUrl != null) {
+                        if (videoUrl == "") {
+                            Toast.makeText(this@MainActivity, R.string.video_not_found, Toast.LENGTH_SHORT).show()
+                        } else {
+                            startVideo(Video(), 0, videoUrl = videoUrl)
+                        }
+                        viewModel.videoUrl.value = null
+                    }
+                }
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.video.collectLatest { pair ->
@@ -862,7 +878,7 @@ class MainActivity : AppCompatActivity() {
                 if (playerFragment != null) {
                     (playerFragment as? Media3PlayerFragment)?.maximize() ?: (playerFragment as? PlayerFragment)?.maximize()
                 } else {
-                    if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+                    if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
                         viewModel.getPlaybackStates()
                     }
                 }
@@ -886,7 +902,7 @@ class MainActivity : AppCompatActivity() {
 //Navigation listeners
 
     fun startStream(stream: Stream) {
-        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
             (playerFragment as? Media3PlayerFragment)?.close() ?: (playerFragment as? ExoPlayerFragment)?.close()
             val fragment = Media3Fragment.newInstance(stream)
             startPlayer(fragment)
@@ -915,8 +931,8 @@ class MainActivity : AppCompatActivity() {
         startPlayer(fragment)
     }
 
-    fun startVideo(video: Video, offset: Long?, ignoreSavedPosition: Boolean = false) {
-        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+    fun startVideo(video: Video, offset: Long?, ignoreSavedPosition: Boolean = false, videoUrl: String? = null) {
+        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
             (playerFragment as? Media3PlayerFragment)?.close() ?: (playerFragment as? ExoPlayerFragment)?.close()
             val fragment = Media3Fragment.newInstance(video, offset, ignoreSavedPosition)
             startPlayer(fragment)
@@ -939,6 +955,7 @@ class MainActivity : AppCompatActivity() {
             durationSeconds = video.durationSeconds,
             videoType = video.type,
             videoAnimatedPreviewURL = video.animatedPreviewURL,
+            videoUrl = videoUrl,
             position = offset,
         ))
         if (ignoreSavedPosition && prefs.getBoolean(C.PLAYER_USE_VIDEO_POSITIONS, true)) {
@@ -954,7 +971,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun startClip(clip: Clip) {
-        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
             (playerFragment as? Media3PlayerFragment)?.close() ?: (playerFragment as? ExoPlayerFragment)?.close()
             val fragment = Media3Fragment.newInstance(clip)
             startPlayer(fragment)
@@ -987,8 +1004,8 @@ class MainActivity : AppCompatActivity() {
         startPlayer(fragment)
     }
 
-    fun startOfflineVideo(video: OfflineVideo) {
-        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+    fun startOfflineVideo(video: OfflineVideo, offset: Long? = null) {
+        if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && !prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
             (playerFragment as? Media3PlayerFragment)?.close() ?: (playerFragment as? ExoPlayerFragment)?.close()
             val fragment = Media3Fragment.newInstance(video)
             startPlayer(fragment)
@@ -1009,6 +1026,9 @@ class MainActivity : AppCompatActivity() {
             createdAt = video.uploadDate?.toString(),
             videoCreatedAt = video.videoCreatedAt,
         ))
+        if (offset != null && prefs.getBoolean(C.PLAYER_USE_VIDEO_POSITIONS, true)) {
+            viewModel.saveOfflineVideoPosition(video.id, offset)
+        }
         val fragment = when (prefs.getString(C.PLAYER, C.EXOPLAYER)) {
             C.MEDIA_PLAYER -> MediaPlayerFragment()
             else -> ExoPlayerFragment()
@@ -1053,7 +1073,7 @@ class MainActivity : AppCompatActivity() {
         if (playerFragment == null) {
             playerFragment = supportFragmentManager.findFragmentById(R.id.playerContainer) as? Media3PlayerFragment ?: supportFragmentManager.findFragmentById(R.id.playerContainer) as? PlayerFragment
             if (playerFragment == null) {
-                if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, false)) {
+                if (prefs.getString(C.PLAYER, C.EXOPLAYER) != C.MEDIA_PLAYER && prefs.getBoolean(C.DEBUG_USE_CUSTOM_PLAYBACK_SERVICE, true)) {
                     viewModel.getPlaybackStates()
                 }
             }
@@ -1114,6 +1134,10 @@ class MainActivity : AppCompatActivity() {
 
     fun getSleepTimerTimeLeft(): Long {
         return viewModel.sleepTimerEndTime - System.currentTimeMillis()
+    }
+
+    fun findVideoUrl(streamId: String?, channelLogin: String?, streamCreatedAt: String?) {
+        viewModel.findVideoUrl(prefs.getString(C.NETWORK_LIBRARY, C.OKHTTP), streamId, channelLogin, streamCreatedAt)
     }
 
     fun downloadStream(filesDir: String, id: String?, title: String?, createdAt: String?, channelId: String?, channelLogin: String?, channelName: String?, channelImage: String?, thumbnail: String?, gameId: String?, gameSlug: String?, gameName: String?, downloadPath: String, quality: String, downloadChat: Boolean, downloadChatEmotes: Boolean, wifiOnly: Boolean) {
@@ -1367,7 +1391,24 @@ class MainActivity : AppCompatActivity() {
                 if (!prefs.getBoolean("ui_theme_rounded_corners", true)) {
                     putString(C.UI_THEME_ROUNDED_CORNERS, "2")
                 }
-                putInt(C.SETTINGS_VERSION, 12)
+            }
+        }
+        if (version < 13) {
+            prefs.edit {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7) {
+                    putString(C.NETWORK_LIBRARY, C.HTTP_ENGINE)
+                } else {
+                    if (CronetProvider.getAllProviders(this@MainActivity).any { it.isEnabled }) {
+                        putString(C.NETWORK_LIBRARY, C.CRONET)
+                    }
+                }
+                prefs.getString("playerRewind", null)?.toLongOrNull()?.let {
+                    putString(C.PLAYER_REWIND, (it / 1000).toString())
+                }
+                prefs.getString("playerForward", null)?.toLongOrNull()?.let {
+                    putString(C.PLAYER_FORWARD, (it / 1000).toString())
+                }
+                putInt(C.SETTINGS_VERSION, 13)
             }
         }
     }

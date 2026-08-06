@@ -29,7 +29,11 @@ import com.github.andreyasadchy.xtra.ui.game.GamePagerFragmentDirections
 import com.github.andreyasadchy.xtra.ui.main.MainActivity
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.TwitchApiHelper
+import com.github.andreyasadchy.xtra.util.TwitchApiHelper.getDurationFromSeconds
 import com.github.andreyasadchy.xtra.util.prefs
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
+import kotlin.time.Instant
 
 class BookmarksAdapter(
     private val fragment: Fragment,
@@ -112,8 +116,8 @@ class BookmarksAdapter(
                     }
                     val durationSeconds = item.duration?.let { duration -> duration.toIntOrNull() ?: TwitchApiHelper.getDuration(duration) }
                     val position = item.videoId?.toLongOrNull()?.let { id -> positions?.find { it.id == id }?.position }
+                    val startFromBeginning = position != null && durationSeconds != null && durationSeconds > 0 && position >= (durationSeconds * 1000)
                     val ignore = ignored?.find { it.userId == item.userId } != null
-                    val userType = item.userType ?: item.userBroadcasterType
                     root.setOnClickListener {
                         (fragment.activity as MainActivity).startVideo(
                             Video(
@@ -131,10 +135,19 @@ class BookmarksAdapter(
                                 durationSeconds = durationSeconds,
                                 type = item.type,
                                 animatedPreviewURL = item.animatedPreviewURL,
-                            ), position
+                            ),
+                            if (startFromBeginning) {
+                                0
+                            } else {
+                                position
+                            },
+                            startFromBeginning
                         )
                     }
-                    root.setOnLongClickListener { deleteVideo(item); true }
+                    root.setOnLongClickListener {
+                        deleteVideo(item)
+                        true
+                    }
                     fragment.requireContext().imageLoader.enqueue(
                         ImageRequest.Builder(fragment.requireContext()).apply {
                             data(item.thumbnail)
@@ -144,7 +157,9 @@ class BookmarksAdapter(
                         }.build()
                     )
                     if (item.createdAt != null) {
-                        val text = TwitchApiHelper.formatTimeString(context, item.createdAt)
+                        val text = Instant.parseOrNull(item.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.let {
+                            TwitchApiHelper.formatDate(context, it)
+                        }
                         if (text != null) {
                             date.visibility = View.VISIBLE
                             date.text = text
@@ -154,17 +169,25 @@ class BookmarksAdapter(
                     } else {
                         date.visibility = View.GONE
                     }
-                    if (item.type?.lowercase() == "archive" && userType != null && item.createdAt != null && context.prefs().getBoolean(C.UI_BOOKMARK_TIME_LEFT, true) && !ignore) {
-                        val time = TwitchApiHelper.getVodTimeLeft(context, item.createdAt,
-                            when (userType.lowercase()) {
-                                "" -> 14
-                                "affiliate" -> 14
-                                else -> 60
+                    if (item.type?.lowercase() == "archive" && item.createdAt != null && context.prefs().getBoolean(C.UI_BOOKMARK_TIME_LEFT, true) && !ignore) {
+                        val text = Instant.parseOrNull(item.createdAt)?.takeIf { time -> time.toEpochMilliseconds() > 0 }?.let { createdAt ->
+                            val userType = item.userType ?: item.userBroadcasterType
+                            val days = if (userType.isNullOrBlank()) {
+                                7
+                            } else {
+                                when (userType.lowercase()) {
+                                    "affiliate" -> 14
+                                    else -> 60 // Partners, Prime, Turbo
+                                }
                             }
-                        )
-                        if (!time.isNullOrBlank()) {
+                            val timeLeft = (createdAt + days.days) - Clock.System.now()
+                            if (timeLeft.isPositive()) {
+                                getDurationFromSeconds(context, timeLeft.inWholeSeconds.toString())
+                            } else null
+                        }
+                        if (text != null) {
                             views.visibility = View.VISIBLE
-                            views.text = context.getString(R.string.vod_time_left, time)
+                            views.text = context.getString(R.string.vod_time_left, text)
                         } else {
                             views.visibility = View.GONE
                         }
@@ -226,7 +249,7 @@ class BookmarksAdapter(
                     } else {
                         progressBar.visibility = View.GONE
                     }
-                    if (item.title != null) {
+                    if (!item.title.isNullOrBlank()) {
                         title.visibility = View.VISIBLE
                         title.text = item.title.trim()
                     } else {

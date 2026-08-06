@@ -76,6 +76,13 @@ class PlayerSettingsDialog : BottomSheetDialogFragment() {
                         dismiss()
                     }
                 }
+                if (requireContext().prefs().getBoolean(C.PLAYER_MENU_FIND_VOD, true)) {
+                    menuFindVod.visibility = View.VISIBLE
+                    menuFindVod.setOnClickListener {
+                        (parentFragment as? PlayerFragment)?.findVideoUrl()
+                        dismiss()
+                    }
+                }
                 if (requireContext().prefs().getBoolean(C.PLAYER_MENU_RESTART, false)) {
                     menuRestart.visibility = View.VISIBLE
                     menuRestart.setOnClickListener {
@@ -149,6 +156,14 @@ class PlayerSettingsDialog : BottomSheetDialogFragment() {
                 menuDownload.setOnClickListener {
                     (parentFragment as? Media3PlayerFragment)?.showDownloadDialog() ?:
                     (parentFragment as? PlayerFragment)?.showDownloadDialog()
+                    dismiss()
+                }
+            }
+            if (requireContext().prefs().getBoolean(C.PLAYER_MENU_SHARE, true)) {
+                menuShare.visibility = View.VISIBLE
+                menuShare.setOnClickListener {
+                    (parentFragment as? Media3PlayerFragment)?.share() ?:
+                    (parentFragment as? PlayerFragment)?.share()
                     dismiss()
                 }
             }

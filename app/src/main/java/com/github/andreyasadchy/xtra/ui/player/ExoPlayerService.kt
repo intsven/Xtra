@@ -1,5 +1,6 @@
 package com.github.andreyasadchy.xtra.ui.player
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +17,8 @@ import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.http.HttpEngine
+import android.net.http.ProxyOptions
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
@@ -23,7 +26,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.os.ext.SdkExtensions
+import android.util.Base64
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
@@ -31,6 +35,7 @@ import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -58,6 +63,7 @@ import com.github.andreyasadchy.xtra.R
 import com.github.andreyasadchy.xtra.XtraApp
 import com.github.andreyasadchy.xtra.model.VideoPosition
 import com.github.andreyasadchy.xtra.model.VideoQuality
+import com.github.andreyasadchy.xtra.model.ui.Video
 import com.github.andreyasadchy.xtra.player.lowlatency.CronetDataSource
 import com.github.andreyasadchy.xtra.player.lowlatency.HlsPlaylistParser
 import com.github.andreyasadchy.xtra.player.lowlatency.HttpEngineDataSource
@@ -79,6 +85,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.Request
+import org.chromium.net.CronetEngine
+import org.chromium.net.CronetProvider
+import org.chromium.net.QuicOptions
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.IOException
@@ -91,6 +100,9 @@ import java.util.Timer
 import kotlin.concurrent.schedule
 import kotlin.concurrent.scheduleAtFixedRate
 import kotlin.math.floor
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 @OptIn(UnstableApi::class)
 class ExoPlayerService : BasePlaybackService() {
@@ -107,6 +119,7 @@ class ExoPlayerService : BasePlaybackService() {
     private var sleepTimerEndTime = 0L
     private var lastSavedPosition: Long? = null
     private var savePositionTimer: Timer? = null
+    private var stopServiceTimer: Timer? = null
 
     private var playingAds = false
     private var proxyMediaPlaylist = false
@@ -121,6 +134,7 @@ class ExoPlayerService : BasePlaybackService() {
         fun loaded()
         fun changePlayerMode()
         fun toast(resId: Int, duration: Int)
+        fun updateVideoInfo()
     }
 
     var serviceListener: Listener? = null
@@ -168,6 +182,7 @@ class ExoPlayerService : BasePlaybackService() {
                 }
 
                 override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                    updatePlaybackState()
                     updateMetadata()
                     updateNotification()
                     if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && !timeline.isEmpty && qualities?.find { it.name == AUTO_QUALITY } != null) {
@@ -179,11 +194,14 @@ class ExoPlayerService : BasePlaybackService() {
                             val name = variant.format.label?.takeIf { it.isNotBlank() }
                                 ?: playlist.videos.find { it.groupId == variant.videoGroupId }?.name?.takeIf { it.isNotBlank() }
                             if (name != null) {
-                                VideoQuality(name, variant.format.codecs, variant.url.toString())
+                                VideoQuality(name, variant.format.codecs, variant.format.bitrate, variant.url.toString())
                             } else null
                         }
                         if (!list.isNullOrEmpty()) {
                             qualities = list.asSequence()
+                                .sortedByDescending {
+                                    it.bitrate
+                                }
                                 .sortedByDescending {
                                     it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                                 }
@@ -194,12 +212,11 @@ class ExoPlayerService : BasePlaybackService() {
                                     add(0, VideoQuality(AUTO_QUALITY))
                                     find { it.name.equals("source", true) }?.let { source ->
                                         remove(source)
-                                        add(1, VideoQuality(SOURCE_QUALITY, source.codecs, source.url))
+                                        add(1, VideoQuality(SOURCE_QUALITY, source.codecs, source.bitrate, source.url))
                                     }
-                                    val audio = find { it.name?.startsWith("audio", true) == true }?.also {
-                                        remove(it)
-                                    }
-                                    add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.url))
+                                    val audio = find { it.name?.startsWith("audio", true) == true }
+                                    audio?.let { remove(it) }
+                                    add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.bitrate, audio?.url))
                                     if (type == STREAM) {
                                         add(VideoQuality(CHAT_ONLY_QUALITY))
                                     }
@@ -251,7 +268,7 @@ class ExoPlayerService : BasePlaybackService() {
                                             proxyMediaPlaylist = true
                                             lifecycleScope.launch {
                                                 for (i in 0 until 10) {
-                                                    delay(10000)
+                                                    delay(10.seconds)
                                                     if (!checkPlaylist(prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP), playlist)) {
                                                         break
                                                     }
@@ -314,14 +331,14 @@ class ExoPlayerService : BasePlaybackService() {
                                         useCustomProxy = false
                                         serviceListener?.toast(R.string.proxy_error, Toast.LENGTH_LONG)
                                         lifecycleScope.launch {
-                                            delay(1500L)
+                                            delay(1500.milliseconds)
                                             restartPlayer()
                                         }
                                     }
                                     else -> {
                                         serviceListener?.toast(R.string.player_error, Toast.LENGTH_SHORT)
                                         lifecycleScope.launch {
-                                            delay(1500L)
+                                            delay(1500.milliseconds)
                                             restartPlayer()
                                         }
                                     }
@@ -342,9 +359,12 @@ class ExoPlayerService : BasePlaybackService() {
                                         videoAnimatedPreviewURL?.let { preview ->
                                             val urls = TwitchApiHelper.getVideoUrlsFromPreview(preview, videoType, backupQualities)
                                             val list = urls.map {
-                                                VideoQuality(it.key, null, it.value)
+                                                VideoQuality(it.key, url = it.value)
                                             }
                                             qualities = list
+                                                .sortedByDescending {
+                                                    it.bitrate
+                                                }
                                                 .sortedByDescending {
                                                     it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                                                 }
@@ -354,12 +374,11 @@ class ExoPlayerService : BasePlaybackService() {
                                                 .toMutableList().apply {
                                                     find { it.name.equals("source", true) }?.let { source ->
                                                         remove(source)
-                                                        add(0, VideoQuality(SOURCE_QUALITY, source.codecs, source.url))
+                                                        add(0, VideoQuality(SOURCE_QUALITY, source.codecs, source.bitrate, source.url))
                                                     }
-                                                    val audio = find { it.name?.startsWith("audio", true) == true }?.also {
-                                                        remove(it)
-                                                    }
-                                                    add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.url))
+                                                    val audio = find { it.name?.startsWith("audio", true) == true }
+                                                    audio?.let { remove(it) }
+                                                    add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.bitrate, audio?.url))
                                                 }
                                             quality = qualities?.firstOrNull()
                                             serviceListener?.changePlayerMode()
@@ -376,11 +395,11 @@ class ExoPlayerService : BasePlaybackService() {
                                                             DefaultDataSource.Factory(
                                                                 this@ExoPlayerService,
                                                                 when {
-                                                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                                    networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                                     }
                                                                     networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                                     }
                                                                     else -> {
                                                                         OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
@@ -408,7 +427,7 @@ class ExoPlayerService : BasePlaybackService() {
                                     else -> {
                                         serviceListener?.toast(R.string.player_error, Toast.LENGTH_SHORT)
                                         lifecycleScope.launch {
-                                            delay(1500L)
+                                            delay(1500.milliseconds)
                                             player?.prepare()
                                         }
                                     }
@@ -435,7 +454,7 @@ class ExoPlayerService : BasePlaybackService() {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     updatePlaybackState()
                     if (isPlaying) {
-                        if (savePositionTimer == null && (videoId != null || offlineVideoId != null)) {
+                        if (savePositionTimer == null && type != STREAM) {
                             savePositionTimer = Timer().apply {
                                 scheduleAtFixedRate(30000, 30000) {
                                     Handler(Looper.getMainLooper()).post {
@@ -444,10 +463,21 @@ class ExoPlayerService : BasePlaybackService() {
                                 }
                             }
                         }
+                        stopServiceTimer?.cancel()
+                        stopServiceTimer = null
                     } else {
                         savePositionTimer?.cancel()
                         savePositionTimer = null
                         updateSavedPosition()
+                        if (stopServiceTimer == null && serviceListener == null) {
+                            stopServiceTimer = Timer().apply {
+                                schedule(600000) {
+                                    Handler(Looper.getMainLooper()).post {
+                                        stopSelf()
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -506,6 +536,35 @@ class ExoPlayerService : BasePlaybackService() {
                         INTENT_FAST_FORWARD -> player?.seekForward()
                     }
                 }
+
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    val eventHandled = super.onMediaButtonEvent(mediaButtonIntent)
+                    return if (eventHandled) {
+                        true
+                    } else {
+                        if (mediaButtonIntent.action == Intent.ACTION_MEDIA_BUTTON) {
+                            val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                            }
+                            if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                                when (keyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                                        player?.seekBack()
+                                        true
+                                    }
+                                    KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                                        player?.seekForward()
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        } else false
+                    }
+                }
             }
             val player = ExoPlayer.Builder(this).apply {
                 setLoadControl(
@@ -520,8 +579,8 @@ class ExoPlayerService : BasePlaybackService() {
                 )
                 setAudioAttributes(AudioAttributes.DEFAULT, prefs().getBoolean(C.PLAYER_AUDIO_FOCUS, false))
                 setHandleAudioBecomingNoisy(prefs().getBoolean(C.PLAYER_HANDLE_AUDIO_BECOMING_NOISY, true))
-                setSeekBackIncrementMs(prefs().getString(C.PLAYER_REWIND, "10000")?.toLongOrNull() ?: 10000)
-                setSeekForwardIncrementMs(prefs().getString(C.PLAYER_FORWARD, "10000")?.toLongOrNull() ?: 10000)
+                setSeekBackIncrementMs((prefs().getString(C.PLAYER_REWIND, "10")?.toLongOrNull() ?: 10) * 1000)
+                setSeekForwardIncrementMs((prefs().getString(C.PLAYER_FORWARD, "10")?.toLongOrNull() ?: 10) * 1000)
             }.build()
             this.player = player
             player.addListener(playerListener)
@@ -575,7 +634,79 @@ class ExoPlayerService : BasePlaybackService() {
                 VIDEO -> {
                     started = true
                     serviceListener?.started()
-                    loadVideo(restorePauseState)
+                    if (videoId != null) {
+                        loadVideo(restorePauseState)
+                        if (title == null) {
+                            updateVideoInfo()
+                        }
+                    } else {
+                        videoUrl?.let { videoUrl ->
+                            val template = videoUrl.removeSuffix("/chunked/index-dvr.m3u8")
+                            val list = TwitchApiHelper.defaultQualityList.map { quality ->
+                                val name = if (quality == "chunked") {
+                                    "source"
+                                } else {
+                                    quality
+                                }
+                                val url = "${template}/${quality}/index-dvr.m3u8"
+                                VideoQuality(name, url = url)
+                            }
+                            qualities = list
+                                .sortedByDescending {
+                                    it.bitrate
+                                }
+                                .sortedByDescending {
+                                    it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
+                                }
+                                .sortedByDescending {
+                                    it.name?.substringBefore("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
+                                }
+                                .toMutableList().apply {
+                                    find { it.name.equals("source", true) }?.let { source ->
+                                        remove(source)
+                                        add(0, VideoQuality(SOURCE_QUALITY, source.codecs, source.bitrate, source.url))
+                                    }
+                                    val audio = find { it.name?.startsWith("audio", true) == true }
+                                    audio?.let { remove(it) }
+                                    add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.bitrate, audio?.url))
+                                }
+                            quality = qualities?.firstOrNull()
+                            serviceListener?.changePlayerMode()
+                            val url = quality?.url
+                            if (url != null) {
+                                player?.let { player ->
+                                    val networkLibrary = prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP)
+                                    player.setMediaSource(
+                                        HlsMediaSource.Factory(
+                                            DefaultDataSource.Factory(
+                                                this@ExoPlayerService,
+                                                when {
+                                                    networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
+                                                    }
+                                                    networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
+                                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
+                                                    }
+                                                    else -> {
+                                                        OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
+                                                    }
+                                                }
+                                            )
+                                        ).apply {
+                                            setPlaylistParserFactory(CustomHlsPlaylistParserFactory())
+                                        }.createMediaSource(
+                                            MediaItem.fromUri(url)
+                                        )
+                                    )
+                                    player.volume = prefs().getInt(C.PLAYER_VOLUME, 100) / 100f
+                                    player.setPlaybackSpeed(prefs().getFloat(C.PLAYER_SPEED, 1f))
+                                    player.prepare()
+                                    player.playWhenReady = !restorePauseState || !paused
+                                    player.seekTo(savedPosition ?: 0)
+                                }
+                            }
+                        }
+                    }
                 }
                 CLIP -> {
                     started = true
@@ -596,7 +727,7 @@ class ExoPlayerService : BasePlaybackService() {
                             serviceListener?.started()
                             if (qualities.isNullOrEmpty()) {
                                 qualities = listOf(
-                                    VideoQuality(SOURCE_QUALITY, null, video.url),
+                                    VideoQuality(SOURCE_QUALITY, url = video.url),
                                     VideoQuality(AUDIO_ONLY_QUALITY),
                                 )
                                 setDefaultQuality()
@@ -635,6 +766,7 @@ class ExoPlayerService : BasePlaybackService() {
                     useCustomProxy = false
                     val url = try {
                         xtraModule.playerRepository.loadStreamPlaylistUrl(
+                            context = this,
                             networkLibrary = prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP),
                             gqlHeaders = TwitchApiHelper.getGQLHeaders(this@ExoPlayerService, prefs().getBoolean(C.TOKEN_INCLUDE_TOKEN_STREAM, true)),
                             channelLogin = channelLogin,
@@ -667,66 +799,231 @@ class ExoPlayerService : BasePlaybackService() {
                     val proxyPort = prefs().getString(C.PROXY_PORT, null)?.toIntOrNull()
                     val proxyUser = prefs().getString(C.PROXY_USER, null)
                     val proxyPassword = prefs().getString(C.PROXY_PASSWORD, null)
-                    val multivariantPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null) {
-                        xtraModule.okHttpClient.value.newBuilder().apply {
-                            proxySelector(
-                                object : ProxySelector() {
-                                    override fun select(u: URI): List<Proxy> {
-                                        return if (Regex(MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
-                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
-                                        } else {
-                                            listOf(Proxy.NO_PROXY)
-                                        }
-                                    }
-
-                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
-                                }
-                            )
-                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
-                                proxyAuthenticator { _, response ->
-                                    response.request.newBuilder().header(
-                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
-                                    ).build()
-                                }
-                            }
-                        }.build()
-                    } else null
-                    val mediaPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null) {
-                        xtraModule.okHttpClient.value.newBuilder().apply {
-                            proxySelector(
-                                object : ProxySelector() {
-                                    override fun select(u: URI): List<Proxy> {
-                                        return if (Regex(MEDIA_PLAYLIST_REGEX).matches(u.host)) {
-                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
-                                        } else {
-                                            listOf(Proxy.NO_PROXY)
-                                        }
-                                    }
-
-                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
-                                }
-                            )
-                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
-                                proxyAuthenticator { _, response ->
-                                    response.request.newBuilder().header(
-                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
-                                    ).build()
-                                }
-                            }
-                        }.build()
-                    } else null
                     player.setMediaSource(
                         HlsMediaSource.Factory(
                             DefaultDataSource.Factory(
                                 this@ExoPlayerService,
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
+                                    networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                        val proxyMultivariantPlaylist = prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                        val proxyMediaPlaylist = prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                        val proxyClient = if (proxyMultivariantPlaylist || proxyMediaPlaylist) {
+                                            val proxyHeaders = if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                listOf(android.util.Pair("Proxy-Authorization", Base64.encodeToString("$proxyUser:$proxyPassword".toByteArray(), Base64.NO_WRAP)))
+                                            } else emptyList()
+                                            val builder = HttpEngine.Builder(application)
+                                            try {
+                                                builder.setProxyOptions(ProxyOptions.fromProxyList(
+                                                    listOf(
+                                                        android.net.http.Proxy.createHttpProxy(
+                                                            android.net.http.Proxy.SCHEME_HTTP,
+                                                            proxyHost,
+                                                            proxyPort,
+                                                            xtraModule.cronetExecutor.value,
+                                                            object : android.net.http.Proxy.HttpConnectCallback {
+                                                                override fun onBeforeRequest(request: android.net.http.Proxy.HttpConnectCallback.Request) {
+                                                                    request.proceed(proxyHeaders)
+                                                                }
+
+                                                                override fun onResponseReceived(responseHeaders: List<android.util.Pair<String?, String?>?>, statusCode: Int): Int {
+                                                                    return android.net.http.Proxy.HttpConnectCallback.RESPONSE_ACTION_PROCEED
+                                                                }
+                                                            }
+                                                        )
+                                                    ),
+                                                    ProxyOptions.ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
+                                                ))
+                                            } catch (e: NoClassDefFoundError) {
+                                                null
+                                            }?.build()
+                                        } else null
+                                        val multivariantPlaylistProxyClient = if (proxyMultivariantPlaylist && proxyClient == null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
+                                        val mediaPlaylistProxyClient = if (proxyMediaPlaylist && proxyClient == null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
+                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, proxyMultivariantPlaylist, proxyMediaPlaylist, proxyClient, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                     }
                                     networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
+                                        val proxyMultivariantPlaylist = prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                        val proxyMediaPlaylist = prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                        val proxyClient = if ((proxyMultivariantPlaylist || proxyMediaPlaylist) && CronetProvider.getAllProviders(application).any { it.isEnabled }) {
+                                            val proxyHeaders = if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                mapOf("Proxy-Authorization" to Base64.encodeToString("$proxyUser:$proxyPassword".toByteArray(), Base64.NO_WRAP)).entries.toList()
+                                            } else emptyList()
+                                            val builder = CronetEngine.Builder(application).apply {
+                                                val userAgent = "Cronet/" + defaultUserAgent.substringAfter("Cronet/", "").substringBefore(')')
+                                                setUserAgent(userAgent)
+                                                @QuicOptions.Experimental
+                                                setQuicOptions(QuicOptions.builder().setHandshakeUserAgent(userAgent).build())
+                                            }
+                                            try {
+                                                @org.chromium.net.ProxyOptions.Experimental
+                                                builder.setProxyOptions(org.chromium.net.ProxyOptions(
+                                                    listOf(
+                                                        org.chromium.net.Proxy(
+                                                            org.chromium.net.Proxy.HTTP,
+                                                            proxyHost,
+                                                            proxyPort,
+                                                            xtraModule.cronetExecutor.value,
+                                                            object : org.chromium.net.Proxy.Callback() {
+                                                                override fun onBeforeTunnelRequest(request: org.chromium.net.Proxy.Callback.Request) {
+                                                                    request.proceed(proxyHeaders)
+                                                                }
+
+                                                                override fun onTunnelHeadersReceived(responseHeaders: List<Map.Entry<String?, String?>?>, statusCode: Int): Boolean {
+                                                                    return true
+                                                                }
+                                                            }
+                                                        )
+                                                    )
+                                                ))
+                                            } catch (e: UnsupportedOperationException) {
+                                                null
+                                            }?.build()
+                                        } else null
+                                        val multivariantPlaylistProxyClient = if (proxyMultivariantPlaylist && proxyClient == null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
+                                        val mediaPlaylistProxyClient = if (proxyMediaPlaylist && proxyClient == null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
+                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, proxyMultivariantPlaylist, proxyMediaPlaylist, proxyClient, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                     }
                                     else -> {
+                                        val multivariantPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
+                                        val mediaPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null) {
+                                            xtraModule.okHttpClient.value.newBuilder().apply {
+                                                proxySelector(
+                                                    object : ProxySelector() {
+                                                        override fun select(u: URI): List<Proxy> {
+                                                            return if (Regex(MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                            } else {
+                                                                listOf(Proxy.NO_PROXY)
+                                                            }
+                                                        }
+
+                                                        override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                    }
+                                                )
+                                                if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                    proxyAuthenticator { _, response ->
+                                                        response.request.newBuilder().header(
+                                                            "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                        ).build()
+                                                    }
+                                                }
+                                            }.build()
+                                        } else null
                                         OkHttpDataSource.Factory(multivariantPlaylistProxyClient ?: xtraModule.okHttpClient.value, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                     }
                                 }.apply {
@@ -808,11 +1105,11 @@ class ExoPlayerService : BasePlaybackService() {
                             DefaultDataSource.Factory(
                                 this@ExoPlayerService,
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                    networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                     }
                                     networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                     }
                                     else -> {
                                         OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
@@ -832,6 +1129,85 @@ class ExoPlayerService : BasePlaybackService() {
                     player.seekTo(playbackPosition)
                 }
             }
+        }
+    }
+
+    private suspend fun updateVideoInfo() {
+        val video = try {
+            val response = xtraModule.graphQLRepository.loadQueryVideo(
+                networkLibrary = prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP),
+                headers = TwitchApiHelper.getGQLHeaders(this),
+                id = videoId
+            )
+            if (prefs().getBoolean(C.ENABLE_INTEGRITY, false)) {
+                response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
+                    integrity.emit("refresh")
+                    return
+                }
+            }
+            response.data!!.let { item ->
+                item.video?.let {
+                    Video(
+                        id = videoId,
+                        channelId = it.owner?.id,
+                        channelLogin = it.owner?.login,
+                        channelName = it.owner?.displayName,
+                        channelImageURL = it.owner?.profileImageURL,
+                        gameId = it.game?.id,
+                        gameSlug = it.game?.slug,
+                        gameName = it.game?.displayName,
+                        title = it.title,
+                        thumbnailURL = it.previewThumbnailURL,
+                        createdAt = it.createdAt?.toString(),
+                        durationSeconds = it.lengthSeconds,
+                        type = it.broadcastType?.toString(),
+                        animatedPreviewURL = it.animatedPreviewURL,
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            val helixHeaders = TwitchApiHelper.getHelixHeaders(this)
+            if (!helixHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
+                try {
+                    xtraModule.helixRepository.getVideos(
+                        networkLibrary = prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP),
+                        headers = helixHeaders,
+                        ids = videoId?.let { listOf(it) }
+                    ).data.firstOrNull()?.let {
+                        Video(
+                            id = it.id,
+                            channelId = it.channelId,
+                            channelLogin = it.channelLogin,
+                            channelName = it.channelName,
+                            title = it.title,
+                            thumbnailURL = it.thumbnailURL,
+                            createdAt = it.createdAt,
+                            viewCount = it.viewCount,
+                            durationSeconds = it.duration?.let { duration -> TwitchApiHelper.getDuration(duration) },
+                        )
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
+        }
+        if (video != null) {
+            channelId = video.channelId
+            channelLogin = video.channelLogin
+            channelName = video.channelName
+            channelImage = video.channelImage
+            gameId = video.gameId
+            gameSlug = video.gameSlug
+            gameName = video.gameName
+            title = video.title
+            thumbnail = video.thumbnail
+            createdAt = video.createdAt
+            durationSeconds = video.durationSeconds
+            videoType = video.type
+            videoAnimatedPreviewURL = video.animatedPreviewURL
+            updateMetadata()
+            updateNotification()
+            serviceListener?.updateVideoInfo()
         }
     }
 
@@ -861,6 +1237,9 @@ class ExoPlayerService : BasePlaybackService() {
                     }
                     qualities = filtered
                         .sortedByDescending {
+                            it.bitrate
+                        }
+                        .sortedByDescending {
                             it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                         }
                         .sortedByDescending {
@@ -886,11 +1265,11 @@ class ExoPlayerService : BasePlaybackService() {
                             DefaultDataSource.Factory(
                                 this@ExoPlayerService,
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                    networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                        HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                     }
                                     networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                        CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                     }
                                     else -> {
                                         OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
@@ -992,27 +1371,32 @@ class ExoPlayerService : BasePlaybackService() {
                                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().apply {
                                     setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, false)
                                     if (!player.currentTracks.isEmpty) {
-                                        player.currentTracks.groups.find { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }?.let {
+                                        player.currentTracks.groups.find { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }?.let { trackGroup ->
                                             val selectedQuality = quality.name?.split("p")
                                             val targetResolution = selectedQuality?.getOrNull(0)?.takeWhile { it.isDigit() }?.toIntOrNull()
                                             val targetFps = selectedQuality?.getOrNull(1)?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 30
-                                            if (it.mediaTrackGroup.length > 0) {
+                                            val targetBitrate = quality.bitrate
+                                            if (trackGroup.mediaTrackGroup.length > 0) {
                                                 if (targetResolution != null) {
-                                                    val formats = mutableListOf<Triple<Int, Int, Float>>()
-                                                    for (i in 0 until it.mediaTrackGroup.length) {
-                                                        val format = it.mediaTrackGroup.getFormat(i)
-                                                        formats.add(Triple(i, format.height, format.frameRate))
+                                                    val formats = mutableListOf<Pair<Int, Format>>()
+                                                    for (i in 0 until trackGroup.mediaTrackGroup.length) {
+                                                        formats.add(i to trackGroup.mediaTrackGroup.getFormat(i))
                                                     }
-                                                    val list = formats.sortedWith(
-                                                        compareByDescending<Triple<Int, Int, Float>> { it.third }.thenByDescending { it.second }
-                                                    )
+                                                    val list = formats
+                                                        .sortedByDescending { it.second.bitrate }
+                                                        .sortedByDescending { it.second.frameRate }
+                                                        .sortedByDescending { it.second.height }
                                                     list.find {
-                                                        (targetResolution == it.second && targetFps >= floor(it.third)) || targetResolution > it.second || it == list.last()
+                                                        (targetResolution == it.second.height
+                                                                && targetFps >= floor(it.second.frameRate)
+                                                                && (targetBitrate == null || targetBitrate >= it.second.bitrate))
+                                                                || targetResolution > it.second.height
+                                                                || it == list.last()
                                                     }?.first?.let { index ->
-                                                        setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, index))
+                                                        setOverrideForType(TrackSelectionOverride(trackGroup.mediaTrackGroup, index))
                                                     }
                                                 } else {
-                                                    setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, 0))
+                                                    setOverrideForType(TrackSelectionOverride(trackGroup.mediaTrackGroup, 0))
                                                 }
                                             }
                                         }
@@ -1065,19 +1449,41 @@ class ExoPlayerService : BasePlaybackService() {
     suspend fun checkPlaylist(networkLibrary: String?, url: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val playlist = when {
-                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
+                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
                     val response = suspendCancellableCoroutine { continuation ->
-                        xtraModule.httpEngine.value!!.newUrlRequestBuilder(url, xtraModule.cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                        val timeout = NetworkUtils.HttpEngineTimeout()
+                        val request = xtraModule.httpEngine.value!!.newUrlRequestBuilder(
+                            url,
+                            xtraModule.cronetExecutor.value,
+                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                        ).build()
+                        timeout.start(request, continuation)
+                        request.start()
+                        continuation.invokeOnCancellation {
+                            request.cancel()
+                            timeout.stop()
+                        }
                     }
-                    response.second.inputStream().use {
+                    response.body.inputStream().use {
                         PlaylistUtils.parseMediaPlaylist(it)
                     }
                 }
                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
                     val response = suspendCancellableCoroutine { continuation ->
-                        xtraModule.cronetEngine.value!!.newUrlRequestBuilder(url, NetworkUtils.byteArrayCronetUrlCallback(continuation), xtraModule.cronetExecutor.value).build().start()
+                        val timeout = NetworkUtils.CronetTimeout()
+                        val request = xtraModule.cronetEngine.value!!.newUrlRequestBuilder(
+                            url,
+                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                            xtraModule.cronetExecutor.value
+                        ).build()
+                        timeout.start(request, continuation)
+                        request.start()
+                        continuation.invokeOnCancellation {
+                            request.cancel()
+                            timeout.stop()
+                        }
                     }
-                    response.second.inputStream().use {
+                    response.body.inputStream().use {
                         PlaylistUtils.parseMediaPlaylist(it)
                     }
                 }
@@ -1091,13 +1497,13 @@ class ExoPlayerService : BasePlaybackService() {
             }
             playlist.segments.lastOrNull()?.let { segment ->
                 segment.title?.let { it.contains("Amazon") || it.contains("Adform") || it.contains("DCM") } == true ||
-                        segment.programDateTime?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let { segmentStartTime ->
+                        segment.programDateTime?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } }?.let { segmentStartTime ->
                             playlist.dateRanges.find { dateRange ->
                                 (dateRange.id.startsWith("stitched-ad-") || dateRange.rangeClass == "twitch-stitched-ad" || dateRange.ad) &&
-                                        dateRange.endDate?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let { endTime ->
+                                        dateRange.endDate?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } }?.let { endTime ->
                                             segmentStartTime < endTime
                                         } == true ||
-                                        dateRange.startDate.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let { startTime ->
+                                        dateRange.startDate.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } }?.let { startTime ->
                                             (dateRange.duration ?: dateRange.plannedDuration)?.let { (it * 1000f).toLong() }?.let { duration ->
                                                 segmentStartTime < (startTime + duration)
                                             } == true
@@ -1190,7 +1596,6 @@ class ExoPlayerService : BasePlaybackService() {
 
     private fun updatePlaybackState() {
         player?.let { player ->
-            val isLive = player.isCurrentMediaItemLive
             session?.setPlaybackState(
                 PlaybackState.Builder().apply {
                     setState(
@@ -1213,24 +1618,14 @@ class ExoPlayerService : BasePlaybackService() {
                             Player.STATE_ENDED -> PlaybackState.STATE_STOPPED
                             else -> PlaybackState.STATE_NONE
                         },
-                        if (!isLive) {
-                            player.currentPosition
-                        } else {
-                            -1
-                        },
-                        if (player.isPlaying && !isLive) {
+                        player.currentPosition,
+                        if (player.isPlaying) {
                             player.playbackParameters.speed
                         } else {
                             0f
                         }
                     )
-                    setBufferedPosition(
-                        if (!isLive) {
-                            player.bufferedPosition
-                        } else {
-                            -1
-                        }
-                    )
+                    setBufferedPosition(player.bufferedPosition)
                     setActions(
                         (PlaybackState.ACTION_STOP
                                 or PlaybackState.ACTION_PAUSE
@@ -1238,23 +1633,18 @@ class ExoPlayerService : BasePlaybackService() {
                                 or PlaybackState.ACTION_REWIND
                                 or PlaybackState.ACTION_FAST_FORWARD
                                 or PlaybackState.ACTION_SET_RATING
-                                or PlaybackState.ACTION_PLAY_PAUSE).let {
-                            if (!isLive) {
-                                it or PlaybackState.ACTION_SEEK_TO
+                                or PlaybackState.ACTION_PLAY_PAUSE
+                                or PlaybackState.ACTION_SEEK_TO).let {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                (it or PlaybackState.ACTION_PREPARE).let {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        it or PlaybackState.ACTION_SET_PLAYBACK_SPEED
+                                    } else {
+                                        it
+                                    }
+                                }
                             } else {
                                 it
-                            }.let {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                                    (it or PlaybackState.ACTION_PREPARE).let {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                            it or PlaybackState.ACTION_SET_PLAYBACK_SPEED
-                                        } else {
-                                            it
-                                        }
-                                    }
-                                } else {
-                                    it
-                                }
                             }
                         }
                     )
@@ -1279,20 +1669,42 @@ class ExoPlayerService : BasePlaybackService() {
                         val scheme = url.toUri().scheme
                         val response = if (scheme == "https" || scheme == "http") {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        xtraModule.httpEngine.value!!.newUrlRequestBuilder(url, xtraModule.cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = xtraModule.httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            xtraModule.cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
-                                        response.second
+                                    if (response.info.httpStatusCode in 200..299) {
+                                        response.body
                                     } else null
                                 }
                                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        xtraModule.cronetEngine.value!!.newUrlRequestBuilder(url, NetworkUtils.byteArrayCronetUrlCallback(continuation), xtraModule.cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = xtraModule.cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            xtraModule.cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
-                                        response.second
+                                    if (response.info.httpStatusCode in 200..299) {
+                                        response.body
                                     } else null
                                 }
                                 else -> {
@@ -1337,14 +1749,7 @@ class ExoPlayerService : BasePlaybackService() {
                         putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bitmap)
                         putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bitmap)
                     }
-                    putLong(
-                        MediaMetadata.METADATA_KEY_DURATION,
-                        if (!player.isCurrentMediaItemLive) {
-                            player.duration
-                        } else {
-                            -1
-                        }
-                    )
+                    putLong(MediaMetadata.METADATA_KEY_DURATION, player.duration)
                 }.build()
             )
         }
@@ -1364,20 +1769,42 @@ class ExoPlayerService : BasePlaybackService() {
                         val scheme = url.toUri().scheme
                         val response = if (scheme == "https" || scheme == "http") {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        xtraModule.httpEngine.value!!.newUrlRequestBuilder(url, xtraModule.cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = xtraModule.httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            xtraModule.cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
-                                        response.second
+                                    if (response.info.httpStatusCode in 200..299) {
+                                        response.body
                                     } else null
                                 }
                                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        xtraModule.cronetEngine.value!!.newUrlRequestBuilder(url, NetworkUtils.byteArrayCronetUrlCallback(continuation), xtraModule.cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = xtraModule.cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            xtraModule.cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
-                                        response.second
+                                    if (response.info.httpStatusCode in 200..299) {
+                                        response.body
                                     } else null
                                 }
                                 else -> {
@@ -1537,6 +1964,23 @@ class ExoPlayerService : BasePlaybackService() {
             sleepTimerEndTime = System.currentTimeMillis() + duration
         }
         return endTime
+    }
+
+    fun setStopServiceTimer(start: Boolean) {
+        if (start) {
+            if (stopServiceTimer == null && player?.isPlaying == false) {
+                stopServiceTimer = Timer().apply {
+                    schedule(600000) {
+                        Handler(Looper.getMainLooper()).post {
+                            stopSelf()
+                        }
+                    }
+                }
+            }
+        } else {
+            stopServiceTimer?.cancel()
+            stopServiceTimer = null
+        }
     }
 
     fun toggleDynamicsProcessing(): Boolean {

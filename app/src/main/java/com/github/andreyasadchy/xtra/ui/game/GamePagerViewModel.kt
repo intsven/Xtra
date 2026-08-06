@@ -1,8 +1,7 @@
 package com.github.andreyasadchy.xtra.ui.game
 
+import android.annotation.SuppressLint
 import android.net.http.HttpEngine
-import android.os.Build
-import android.os.ext.SdkExtensions
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -114,24 +113,21 @@ class GamePagerViewModel(
         }
     }
 
-    fun isFollowingGame(gameId: String?, gameSlug: String?, gameName: String?, setting: Int, networkLibrary: String?, gqlHeaders: Map<String, String>) {
+    fun isFollowingGame(gameId: String?, setting: Int, networkLibrary: String?, gqlHeaders: Map<String, String>) {
         if (_isFollowing.value == null) {
             viewModelScope.launch {
                 try {
-                    val isFollowing = if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
-                        graphQLRepository.loadQueryFollowingGame(
-                            networkLibrary = networkLibrary,
-                            headers = gqlHeaders,
-                            id = gameId,
-                            slug = gameSlug.takeIf { gameId.isNullOrBlank() },
-                            name = gameName.takeIf { gameId.isNullOrBlank() && gameSlug.isNullOrBlank() },
-                        ).data?.game?.self?.follow?.followedAt != null
-                    } else {
-                        gameId?.let {
-                            localGameFollowsRepository.getById(it)
-                        } != null
+                    if (!gameId.isNullOrBlank()) {
+                        _isFollowing.value = if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
+                            graphQLRepository.loadQueryFollowingGame(
+                                networkLibrary = networkLibrary,
+                                headers = gqlHeaders,
+                                id = gameId,
+                            ).data?.game?.self?.follow?.followedAt != null
+                        } else {
+                            localGameFollowsRepository.getById(gameId) != null
+                        }
                     }
-                    _isFollowing.value = isFollowing
                 } catch (e: Exception) {
 
                 }
@@ -142,23 +138,23 @@ class GamePagerViewModel(
     fun saveFollowGame(gameId: String?, gameSlug: String?, gameName: String?, setting: Int, filesDir: String, networkLibrary: String?, gqlHeaders: Map<String, String>, helixHeaders: Map<String, String>, enableIntegrity: Boolean) {
         viewModelScope.launch {
             try {
-                if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
-                    val errorMessage = graphQLRepository.loadFollowGame(networkLibrary, gqlHeaders, gameId).also { response ->
-                        if (enableIntegrity) {
-                            response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
-                                integrity.emit("follow")
-                                return@launch
+                if (!gameId.isNullOrBlank()) {
+                    if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
+                        val errorMessage = graphQLRepository.loadFollowGame(networkLibrary, gqlHeaders, gameId).also { response ->
+                            if (enableIntegrity) {
+                                response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
+                                    integrity.emit("follow")
+                                    return@launch
+                                }
                             }
+                        }.errors?.firstOrNull()?.message
+                        if (!errorMessage.isNullOrBlank()) {
+                            follow.value = Pair(true, errorMessage)
+                        } else {
+                            _isFollowing.value = true
+                            follow.value = Pair(true, null)
                         }
-                    }.errors?.firstOrNull()?.message
-                    if (!errorMessage.isNullOrBlank()) {
-                        follow.value = Pair(true, errorMessage)
                     } else {
-                        _isFollowing.value = true
-                        follow.value = Pair(true, null)
-                    }
-                } else {
-                    if (!gameId.isNullOrBlank()) {
                         File(filesDir, "box_art").mkdir()
                         val path = filesDir + File.separator + "box_art" + File.separator + gameId
                         viewModelScope.launch(Dispatchers.IO) {
@@ -173,30 +169,52 @@ class GamePagerViewModel(
                                             ids = listOf(gameId)
                                         ).data.firstOrNull()?.boxArtURL
                                     } else null
-                                }.takeIf { !it.isNullOrBlank() }?.let { TwitchApiHelper.getGameBoxArt(it) }?.let {
+                                }.takeIf { !it.isNullOrBlank() }?.let { TwitchApiHelper.getGameBoxArt(it) }?.let { url ->
                                     when {
-                                        networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                        networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                             val response = suspendCancellableCoroutine { continuation ->
-                                                httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                                val timeout = NetworkUtils.HttpEngineTimeout()
+                                                val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                    url,
+                                                    cronetExecutor.value,
+                                                    NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                                ).build()
+                                                timeout.start(request, continuation)
+                                                request.start()
+                                                continuation.invokeOnCancellation {
+                                                    request.cancel()
+                                                    timeout.stop()
+                                                }
                                             }
-                                            if (response.first.httpStatusCode in 200..299) {
+                                            if (response.info.httpStatusCode in 200..299) {
                                                 FileOutputStream(path).use {
-                                                    it.write(response.second)
+                                                    it.write(response.body)
                                                 }
                                             }
                                         }
                                         networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                             val response = suspendCancellableCoroutine { continuation ->
-                                                cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                                val timeout = NetworkUtils.CronetTimeout()
+                                                val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                    url,
+                                                    NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                    cronetExecutor.value
+                                                ).build()
+                                                timeout.start(request, continuation)
+                                                request.start()
+                                                continuation.invokeOnCancellation {
+                                                    request.cancel()
+                                                    timeout.stop()
+                                                }
                                             }
-                                            if (response.first.httpStatusCode in 200..299) {
+                                            if (response.info.httpStatusCode in 200..299) {
                                                 FileOutputStream(path).use {
-                                                    it.write(response.second)
+                                                    it.write(response.body)
                                                 }
                                             }
                                         }
                                         else -> {
-                                            okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                            okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                                 if (response.isSuccessful) {
                                                     FileOutputStream(path).use { outputStream ->
                                                         response.body.byteStream().use { inputStream ->
@@ -226,23 +244,23 @@ class GamePagerViewModel(
     fun deleteFollowGame(gameId: String?, setting: Int, networkLibrary: String?, gqlHeaders: Map<String, String>, enableIntegrity: Boolean) {
         viewModelScope.launch {
             try {
-                if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
-                    val errorMessage = graphQLRepository.loadUnfollowGame(networkLibrary, gqlHeaders, gameId).also { response ->
-                        if (enableIntegrity) {
-                            response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
-                                integrity.emit("unfollow")
-                                return@launch
+                if (!gameId.isNullOrBlank()) {
+                    if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) {
+                        val errorMessage = graphQLRepository.loadUnfollowGame(networkLibrary, gqlHeaders, gameId).also { response ->
+                            if (enableIntegrity) {
+                                response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
+                                    integrity.emit("unfollow")
+                                    return@launch
+                                }
                             }
+                        }.errors?.firstOrNull()?.message
+                        if (!errorMessage.isNullOrBlank()) {
+                            follow.value = Pair(false, errorMessage)
+                        } else {
+                            _isFollowing.value = false
+                            follow.value = Pair(false, null)
                         }
-                    }.errors?.firstOrNull()?.message
-                    if (!errorMessage.isNullOrBlank()) {
-                        follow.value = Pair(false, errorMessage)
                     } else {
-                        _isFollowing.value = false
-                        follow.value = Pair(false, null)
-                    }
-                } else {
-                    if (gameId != null) {
                         localGameFollowsRepository.getById(gameId)?.let { localGameFollowsRepository.delete(it) }
                         _isFollowing.value = false
                         follow.value = Pair(false, null)
@@ -273,30 +291,52 @@ class GamePagerViewModel(
                                         ids = listOf(gameId)
                                     ).data.firstOrNull()?.boxArtURL
                                 } else null
-                            }.takeIf { !it.isNullOrBlank() }?.let { TwitchApiHelper.getGameBoxArt(it) }?.let {
+                            }.takeIf { !it.isNullOrBlank() }?.let { TwitchApiHelper.getGameBoxArt(it) }?.let { url ->
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                            val timeout = NetworkUtils.HttpEngineTimeout()
+                                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                cronetExecutor.value,
+                                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                            val timeout = NetworkUtils.CronetTimeout()
+                                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                cronetExecutor.value
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     else -> {
-                                        okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                        okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                             if (response.isSuccessful) {
                                                 FileOutputStream(path).use { outputStream ->
                                                     response.body.byteStream().use { inputStream ->

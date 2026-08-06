@@ -2,7 +2,6 @@ package com.github.andreyasadchy.xtra.ui.chat
 
 import com.github.andreyasadchy.xtra.model.chat.ChatMessage
 import com.github.andreyasadchy.xtra.model.chat.VideoChatMessage
-import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -10,6 +9,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Instant
 
 class ChatReplayManagerLocal(
     private val createdAt: Long?,
@@ -34,10 +35,13 @@ class ChatReplayManagerLocal(
     fun setMessages(newLiveMessages: List<ChatMessage>, newMessages: List<VideoChatMessage>, newStartTime: Long) {
         if (newLiveMessages.isNotEmpty()) {
             liveMessages = newLiveMessages
+            if (createdAt != null) {
+                startTime = newStartTime - createdAt
+            }
         } else {
             messages = newMessages
+            startTime = newStartTime
         }
-        startTime = newStartTime
         if (started) {
             start()
         }
@@ -93,7 +97,7 @@ class ChatReplayManagerLocal(
                         list.addAll(
                             messages.filter { message ->
                                 val messageOffset = if (createdAt != null && !message.createdAt.isNullOrBlank()) {
-                                    TwitchApiHelper.parseIso8601DateUTC(message.createdAt)?.minus(createdAt)
+                                    Instant.parseOrNull(message.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.minus(createdAt)
                                 } else {
                                     null
                                 } ?: message.offsetSeconds?.times(1000L)
@@ -129,7 +133,7 @@ class ChatReplayManagerLocal(
                                 currentPosition < messageOffset
                             }
                         ) {
-                            delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0))
+                            delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0).milliseconds)
                         }
                         if (!isActive) {
                             break
@@ -144,7 +148,7 @@ class ChatReplayManagerLocal(
                 } else {
                     val message = list.firstOrNull() ?: break
                     val messageOffset = if (createdAt != null && !message.createdAt.isNullOrBlank()) {
-                        TwitchApiHelper.parseIso8601DateUTC(message.createdAt)?.minus(createdAt)
+                        Instant.parseOrNull(message.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.minus(createdAt)
                     } else {
                         null
                     } ?: message.offsetSeconds?.times(1000L)
@@ -157,13 +161,14 @@ class ChatReplayManagerLocal(
                                 currentPosition < messageOffset
                             }
                         ) {
-                            delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0))
+                            delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0).milliseconds)
                         }
                         if (!isActive) {
                             break
                         }
                         listener.onChatMessage(
                             ChatMessage(
+                                type = ChatMessage.USER_MESSAGE,
                                 id = message.id,
                                 userId = message.userId,
                                 userLogin = message.userLogin,

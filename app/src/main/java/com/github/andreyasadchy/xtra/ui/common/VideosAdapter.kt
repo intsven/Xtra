@@ -30,6 +30,7 @@ import com.github.andreyasadchy.xtra.ui.main.MainActivity
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import com.github.andreyasadchy.xtra.util.prefs
+import kotlin.time.Instant
 
 class VideosAdapter(
     private val fragment: Fragment,
@@ -84,10 +85,22 @@ class VideosAdapter(
                 if (item != null) {
                     val context = fragment.requireContext()
                     val position = item.id?.toLongOrNull()?.let { id -> positions?.find { it.id == id }?.position }
+                    val startFromBeginning = position != null && item.durationSeconds != null && item.durationSeconds > 0 && position >= (item.durationSeconds * 1000)
                     root.setOnClickListener {
-                        (fragment.activity as MainActivity).startVideo(item, position)
+                        (fragment.activity as MainActivity).startVideo(
+                            item,
+                            if (startFromBeginning) {
+                                0
+                            } else {
+                                position
+                            },
+                            startFromBeginning
+                        )
                     }
-                    root.setOnLongClickListener { showDownloadDialog(item); true }
+                    root.setOnLongClickListener {
+                        showDownloadDialog(item)
+                        true
+                    }
                     fragment.requireContext().imageLoader.enqueue(
                         ImageRequest.Builder(fragment.requireContext()).apply {
                             data(item.thumbnail)
@@ -97,7 +110,9 @@ class VideosAdapter(
                         }.build()
                     )
                     if (item.createdAt != null) {
-                        val text = TwitchApiHelper.formatTimeString(context, item.createdAt)
+                        val text = Instant.parseOrNull(item.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.let {
+                            TwitchApiHelper.formatDate(context, it)
+                        }
                         if (text != null) {
                             date.visibility = View.VISIBLE
                             date.text = text
@@ -187,7 +202,7 @@ class VideosAdapter(
                         userImage.visibility = View.GONE
                         username.visibility = View.GONE
                     }
-                    if (item.title != null && item.title != "") {
+                    if (!item.title.isNullOrBlank()) {
                         title.visibility = View.VISIBLE
                         title.text = item.title.trim()
                     } else {

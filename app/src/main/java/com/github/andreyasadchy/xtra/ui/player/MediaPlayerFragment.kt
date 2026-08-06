@@ -16,8 +16,11 @@ import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.core.view.isVisible
 import androidx.media3.common.util.UnstableApi
+import androidx.navigation.fragment.findNavController
 import com.github.andreyasadchy.xtra.R
 import com.github.andreyasadchy.xtra.model.VideoQuality
+import com.github.andreyasadchy.xtra.ui.game.GameMediaFragmentDirections
+import com.github.andreyasadchy.xtra.ui.game.GamePagerFragmentDirections
 import com.github.andreyasadchy.xtra.ui.main.MainActivity
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.prefs
@@ -48,7 +51,7 @@ class MediaPlayerFragment : PlayerFragment() {
             }
 
             override fun onCompletion(player: MediaPlayer) {
-                updatePlayingState()
+                updatePlayingState(true)
             }
 
             override fun onInfo(player: MediaPlayer, what: Int, extra: Int) {
@@ -80,9 +83,17 @@ class MediaPlayerFragment : PlayerFragment() {
         val serviceListener = object : MediaPlayerService.Listener {
             override fun started() {
                 if (view != null) {
-                    if (!started && (isInitialized || !enableNetworkCheck)) {
-                        started = true
-                        start()
+                    if (!started) {
+                        if (isInitialized || !enableNetworkCheck) {
+                            started = true
+                            start()
+                        }
+                    } else {
+                        chatFragment?.startReplayChatLoad()
+                        if (playbackService?.restoreQuality == true) {
+                            playbackService?.restoreQuality = false
+                            changeQuality(playbackService?.previousQuality)
+                        }
                     }
                 }
             }
@@ -110,6 +121,41 @@ class MediaPlayerFragment : PlayerFragment() {
             override fun toast(resId: Int, duration: Int) {
                 if (view != null) {
                     Toast.makeText(requireContext(), resId, duration).show()
+                }
+            }
+
+            override fun updateVideoInfo() {
+                if (view != null) {
+                    with(binding.playerControls) {
+                        val titleText = playbackService?.title
+                        if (!titleText.isNullOrBlank() && requireContext().prefs().getBoolean(C.PLAYER_TITLE, true)) {
+                            title.visibility = View.VISIBLE
+                            title.text = titleText
+                        }
+                        val gameName = playbackService?.gameName
+                        if (!gameName.isNullOrBlank() && requireContext().prefs().getBoolean(C.PLAYER_CATEGORY, true)) {
+                            category.visibility = View.VISIBLE
+                            category.text = gameName
+                            category.setOnClickListener {
+                                findNavController().navigate(
+                                    if (requireContext().prefs().getBoolean(C.UI_GAME_PAGER, true)) {
+                                        GamePagerFragmentDirections.actionGlobalGamePagerFragment(
+                                            gameId = playbackService?.gameId,
+                                            gameSlug = playbackService?.gameSlug,
+                                            gameName = gameName
+                                        )
+                                    } else {
+                                        GameMediaFragmentDirections.actionGlobalGameMediaFragment(
+                                            gameId = playbackService?.gameId,
+                                            gameSlug = playbackService?.gameSlug,
+                                            gameName = gameName
+                                        )
+                                    }
+                                )
+                                minimize()
+                            }
+                        }
+                    }
                 }
             }
 
@@ -162,6 +208,7 @@ class MediaPlayerFragment : PlayerFragment() {
                             (activity as? MainActivity)?.closePlayer()
                         }
                     }
+                    playbackService?.setStopServiceTimer(false)
                     playbackService?.player?.let { player ->
                         if (!requireContext().prefs().getBoolean(C.PLAYER_KEEP_SCREEN_ON_WHEN_PAUSED, false) && canEnterPictureInPicture()) {
                             requireView().keepScreenOn = player.isPlaying
@@ -209,7 +256,7 @@ class MediaPlayerFragment : PlayerFragment() {
         serviceConnection = connection
     }
 
-    private fun updatePlayingState() {
+    private fun updatePlayingState(ended: Boolean = false) {
         playbackService?.player?.let { player ->
             val isPlaying = player.isPlaying
             if (!isPlaying) {
@@ -223,8 +270,8 @@ class MediaPlayerFragment : PlayerFragment() {
             }
             setPipActions(isPlaying)
             controllerAutoHide = isPlaying
-            if (playbackService?.type != BasePlaybackService.STREAM && useController) {
-                showController()
+            if (useController) {
+                showController(show = playbackService?.type != BasePlaybackService.STREAM && ended)
             }
             updateProgress()
             if (!requireContext().prefs().getBoolean(C.PLAYER_KEEP_SCREEN_ON_WHEN_PAUSED, false) && canEnterPictureInPicture()) {
@@ -261,7 +308,7 @@ class MediaPlayerFragment : PlayerFragment() {
 
     override fun rewind() {
         playbackService?.player?.let { player ->
-            val rewindMs = requireContext().prefs().getString(C.PLAYER_REWIND, "10000")?.toLongOrNull() ?: 10000
+            val rewindMs = (requireContext().prefs().getString(C.PLAYER_REWIND, "10")?.toLongOrNull() ?: 10) * 1000
             val position = player.currentPosition - rewindMs
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 player.seekTo(position, MediaPlayer.SEEK_CLOSEST)
@@ -273,7 +320,7 @@ class MediaPlayerFragment : PlayerFragment() {
 
     override fun fastForward() {
         playbackService?.player?.let { player ->
-            val fastForwardMs = requireContext().prefs().getString(C.PLAYER_FORWARD, "10000")?.toLongOrNull() ?: 10000
+            val fastForwardMs = (requireContext().prefs().getString(C.PLAYER_FORWARD, "10")?.toLongOrNull() ?: 10) * 1000
             val position = player.currentPosition + fastForwardMs
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 player.seekTo(position, MediaPlayer.SEEK_CLOSEST)
@@ -345,6 +392,7 @@ class MediaPlayerFragment : PlayerFragment() {
         if (playbackService != null) {
             playbackService?.startAudioOnly()
             playbackService?.setSleepTimer((activity as? MainActivity)?.getSleepTimerTimeLeft() ?: 0)
+            playbackService?.setStopServiceTimer(true)
         }
         playbackService?.playerListener = null
         surfaceHolderCallback?.let { binding.playerSurface.holder.removeCallback(it) }
@@ -387,6 +435,7 @@ class MediaPlayerFragment : PlayerFragment() {
             }
             playbackService?.stop(isInPIPMode)
             playbackService?.setSleepTimer((activity as? MainActivity)?.getSleepTimerTimeLeft() ?: 0)
+            playbackService?.setStopServiceTimer(true)
         }
         binding.playerControls.root.removeCallbacks(updateProgressAction)
         playbackService?.playerListener = null

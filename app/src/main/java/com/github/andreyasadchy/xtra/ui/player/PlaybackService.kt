@@ -1,13 +1,16 @@
 package com.github.andreyasadchy.xtra.ui.player
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.audiofx.DynamicsProcessing
+import android.net.http.HttpEngine
+import android.net.http.ProxyOptions
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ext.SdkExtensions
+import android.util.Base64
 import androidx.annotation.OptIn
 import androidx.core.content.edit
 import androidx.core.net.toUri
@@ -39,12 +42,17 @@ import com.github.andreyasadchy.xtra.player.lowlatency.CronetDataSource
 import com.github.andreyasadchy.xtra.player.lowlatency.HttpEngineDataSource
 import com.github.andreyasadchy.xtra.player.lowlatency.OkHttpDataSource
 import com.github.andreyasadchy.xtra.ui.main.MainActivity
+import com.github.andreyasadchy.xtra.ui.player.ExoPlayerService.Companion.MEDIA_PLAYLIST_REGEX
+import com.github.andreyasadchy.xtra.ui.player.ExoPlayerService.Companion.MULTIVARIANT_PLAYLIST_REGEX
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.prefs
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.runBlocking
 import okhttp3.Credentials
+import org.chromium.net.CronetEngine
+import org.chromium.net.CronetProvider
+import org.chromium.net.QuicOptions
 import org.json.JSONObject
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -88,8 +96,8 @@ class PlaybackService : MediaSessionService() {
             )
             setAudioAttributes(AudioAttributes.DEFAULT, prefs().getBoolean(C.PLAYER_AUDIO_FOCUS, false))
             setHandleAudioBecomingNoisy(prefs().getBoolean(C.PLAYER_HANDLE_AUDIO_BECOMING_NOISY, true))
-            setSeekBackIncrementMs(prefs().getString(C.PLAYER_REWIND, "10000")?.toLongOrNull() ?: 10000)
-            setSeekForwardIncrementMs(prefs().getString(C.PLAYER_FORWARD, "10000")?.toLongOrNull() ?: 10000)
+            setSeekBackIncrementMs((prefs().getString(C.PLAYER_REWIND, "10")?.toLongOrNull() ?: 10) * 1000)
+            setSeekForwardIncrementMs((prefs().getString(C.PLAYER_FORWARD, "10")?.toLongOrNull() ?: 10) * 1000)
         }.build()
         player.addListener(
             object : Player.Listener {
@@ -206,67 +214,232 @@ class PlaybackService : MediaSessionService() {
                                 val proxyPort = prefs().getString(C.PROXY_PORT, null)?.toIntOrNull()
                                 val proxyUser = prefs().getString(C.PROXY_USER, null)
                                 val proxyPassword = prefs().getString(C.PROXY_PASSWORD, null)
-                                val multivariantPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null) {
-                                    xtraModule.okHttpClient.value.newBuilder().apply {
-                                        proxySelector(
-                                            object : ProxySelector() {
-                                                override fun select(u: URI): List<Proxy> {
-                                                    return if (Regex(ExoPlayerService.MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
-                                                        listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
-                                                    } else {
-                                                        listOf(Proxy.NO_PROXY)
-                                                    }
-                                                }
-
-                                                override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
-                                            }
-                                        )
-                                        if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
-                                            proxyAuthenticator { _, response ->
-                                                response.request.newBuilder().header(
-                                                    "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
-                                                ).build()
-                                            }
-                                        }
-                                    }.build()
-                                } else null
-                                val mediaPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null) {
-                                    xtraModule.okHttpClient.value.newBuilder().apply {
-                                        proxySelector(
-                                            object : ProxySelector() {
-                                                override fun select(u: URI): List<Proxy> {
-                                                    return if (Regex(ExoPlayerService.MEDIA_PLAYLIST_REGEX).matches(u.host)) {
-                                                        listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
-                                                    } else {
-                                                        listOf(Proxy.NO_PROXY)
-                                                    }
-                                                }
-
-                                                override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
-                                            }
-                                        )
-                                        if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
-                                            proxyAuthenticator { _, response ->
-                                                response.request.newBuilder().header(
-                                                    "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
-                                                ).build()
-                                            }
-                                        }
-                                    }.build()
-                                } else null
                                 val networkLibrary = prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP)
                                 player.setMediaSource(
                                     HlsMediaSource.Factory(
                                         DefaultDataSource.Factory(
                                             this@PlaybackService,
                                             when {
-                                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
+                                                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                                    val proxyMultivariantPlaylist = prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                                    val proxyMediaPlaylist = prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                                    val proxyClient = if (proxyMultivariantPlaylist || proxyMediaPlaylist) {
+                                                        val proxyHeaders = if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                            listOf(android.util.Pair("Proxy-Authorization", Base64.encodeToString("$proxyUser:$proxyPassword".toByteArray(), Base64.NO_WRAP)))
+                                                        } else emptyList()
+                                                        val builder = HttpEngine.Builder(application)
+                                                        try {
+                                                            builder.setProxyOptions(ProxyOptions.fromProxyList(
+                                                                listOf(
+                                                                    android.net.http.Proxy.createHttpProxy(
+                                                                        android.net.http.Proxy.SCHEME_HTTP,
+                                                                        proxyHost,
+                                                                        proxyPort,
+                                                                        xtraModule.cronetExecutor.value,
+                                                                        object : android.net.http.Proxy.HttpConnectCallback {
+                                                                            override fun onBeforeRequest(request: android.net.http.Proxy.HttpConnectCallback.Request) {
+                                                                                request.proceed(proxyHeaders)
+                                                                            }
+
+                                                                            override fun onResponseReceived(responseHeaders: List<android.util.Pair<String?, String?>?>, statusCode: Int): Int {
+                                                                                return android.net.http.Proxy.HttpConnectCallback.RESPONSE_ACTION_PROCEED
+                                                                            }
+                                                                        }
+                                                                    )
+                                                                ),
+                                                                ProxyOptions.ALL_PROXIES_FAILED_BEHAVIOR_DISALLOW_DIRECT
+                                                            ))
+                                                        } catch (e: NoClassDefFoundError) {
+                                                            null
+                                                        }?.build()
+                                                    } else null
+                                                    val multivariantPlaylistProxyClient = if (proxyMultivariantPlaylist && proxyClient == null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
+                                                    val mediaPlaylistProxyClient = if (proxyMediaPlaylist && proxyClient == null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
+                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, proxyMultivariantPlaylist, proxyMediaPlaylist, proxyClient, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                                 }
                                                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
+                                                    val proxyMultivariantPlaylist = prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                                    val proxyMediaPlaylist = prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null
+                                                    val proxyClient = if ((proxyMultivariantPlaylist || proxyMediaPlaylist) && CronetProvider.getAllProviders(application).any { it.isEnabled }) {
+                                                        val proxyHeaders = if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                            mapOf("Proxy-Authorization" to Base64.encodeToString("$proxyUser:$proxyPassword".toByteArray(), Base64.NO_WRAP)).entries.toList()
+                                                        } else emptyList()
+                                                        val builder = CronetEngine.Builder(application).apply {
+                                                            val userAgent = "Cronet/" + defaultUserAgent.substringAfter("Cronet/", "").substringBefore(')')
+                                                            setUserAgent(userAgent)
+                                                            @QuicOptions.Experimental
+                                                            setQuicOptions(QuicOptions.builder().setHandshakeUserAgent(userAgent).build())
+                                                        }
+                                                        try {
+                                                            @org.chromium.net.ProxyOptions.Experimental
+                                                            builder.setProxyOptions(org.chromium.net.ProxyOptions(
+                                                                listOf(
+                                                                    org.chromium.net.Proxy(
+                                                                        org.chromium.net.Proxy.HTTP,
+                                                                        proxyHost,
+                                                                        proxyPort,
+                                                                        xtraModule.cronetExecutor.value,
+                                                                        object : org.chromium.net.Proxy.Callback() {
+                                                                            override fun onBeforeTunnelRequest(request: Request) {
+                                                                                request.proceed(proxyHeaders)
+                                                                            }
+
+                                                                            override fun onTunnelHeadersReceived(responseHeaders: List<Map.Entry<String?, String?>?>, statusCode: Int): Boolean {
+                                                                                return true
+                                                                            }
+                                                                        }
+                                                                    )
+                                                                )
+                                                            ))
+                                                        } catch (e: UnsupportedOperationException) {
+                                                            null
+                                                        }?.build()
+                                                    } else null
+                                                    val multivariantPlaylistProxyClient = if (proxyMultivariantPlaylist && proxyClient == null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(ExoPlayerService.MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
+                                                    val mediaPlaylistProxyClient = if (proxyMediaPlaylist && proxyClient == null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(ExoPlayerService.MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
+                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, proxyMultivariantPlaylist, proxyMediaPlaylist, proxyClient, multivariantPlaylistProxyClient, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                                 }
                                                 else -> {
+                                                    val multivariantPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MULTIVARIANT_PLAYLIST, false) && !proxyHost.isNullOrBlank() && proxyPort != null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(ExoPlayerService.MULTIVARIANT_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
+                                                    val mediaPlaylistProxyClient = if (prefs().getBoolean(C.PROXY_MEDIA_PLAYLIST, true) && !proxyHost.isNullOrBlank() && proxyPort != null) {
+                                                        xtraModule.okHttpClient.value.newBuilder().apply {
+                                                            proxySelector(
+                                                                object : ProxySelector() {
+                                                                    override fun select(u: URI): List<Proxy> {
+                                                                        return if (Regex(ExoPlayerService.MEDIA_PLAYLIST_REGEX).matches(u.host)) {
+                                                                            listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)), Proxy.NO_PROXY)
+                                                                        } else {
+                                                                            listOf(Proxy.NO_PROXY)
+                                                                        }
+                                                                    }
+
+                                                                    override fun connectFailed(u: URI, sa: SocketAddress, e: IOException) {}
+                                                                }
+                                                            )
+                                                            if (!proxyUser.isNullOrBlank() && !proxyPassword.isNullOrBlank()) {
+                                                                proxyAuthenticator { _, response ->
+                                                                    response.request.newBuilder().header(
+                                                                        "Proxy-Authorization", Credentials.basic(proxyUser, proxyPassword)
+                                                                    ).build()
+                                                                }
+                                                            }
+                                                        }.build()
+                                                    } else null
                                                     OkHttpDataSource.Factory(multivariantPlaylistProxyClient ?: xtraModule.okHttpClient.value, mediaPlaylistProxyClient) { proxyMediaPlaylist }
                                                 }
                                             }.apply {
@@ -333,11 +506,11 @@ class PlaybackService : MediaSessionService() {
                                         DefaultDataSource.Factory(
                                             this@PlaybackService,
                                             when {
-                                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                 }
                                                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                 }
                                                 else -> {
                                                     OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
@@ -379,11 +552,11 @@ class PlaybackService : MediaSessionService() {
                                         DefaultDataSource.Factory(
                                             this@PlaybackService,
                                             when {
-                                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && xtraModule.httpEngine.value != null -> {
-                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                networkLibrary == C.HTTP_ENGINE && xtraModule.httpEngine.value != null -> @SuppressLint("NewApi") {
+                                                    HttpEngineDataSource.Factory(xtraModule.httpEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                 }
                                                 networkLibrary == C.CRONET && xtraModule.cronetEngine.value != null -> {
-                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, null, null) { false }
+                                                    CronetDataSource.Factory(xtraModule.cronetEngine.value, xtraModule.cronetExecutor.value, false, false, null, null, null) { false }
                                                 }
                                                 else -> {
                                                     OkHttpDataSource.Factory(xtraModule.okHttpClient.value, null) { false }
@@ -509,12 +682,13 @@ class PlaybackService : MediaSessionService() {
                                     val name = variant.format.label?.takeIf { it.isNotBlank() }
                                         ?: playlist.videos.find { it.groupId == variant.videoGroupId }?.name?.takeIf { it.isNotBlank() }
                                     if (name != null) {
-                                        VideoQuality(name, variant.format.codecs, variant.url.toString())
+                                        VideoQuality(name, variant.format.codecs, variant.format.bitrate, variant.url.toString())
                                     } else null
                                 }
                                 Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS, Bundle().apply {
                                     putStringArray(NAMES, list?.map { it.name.toString() }?.toTypedArray())
                                     putStringArray(CODECS, list?.map { it.codecs.toString() }?.toTypedArray())
+                                    putStringArray(BITRATES, list?.map { it.bitrate.toString() }?.toTypedArray())
                                     putStringArray(URLS, list?.map { it.url.toString() }?.toTypedArray())
                                 }))
                             }
@@ -653,6 +827,7 @@ class PlaybackService : MediaSessionService() {
         const val DURATION = "duration"
         const val NAMES = "names"
         const val CODECS = "codecs"
+        const val BITRATES = "bitrates"
         const val URLS = "urls"
 
         const val REQUEST_CODE_RESUME = 2

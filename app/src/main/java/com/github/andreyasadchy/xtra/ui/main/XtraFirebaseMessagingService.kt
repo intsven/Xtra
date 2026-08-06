@@ -41,7 +41,7 @@ class XtraFirebaseMessagingService : FirebaseMessagingService() {
             LiveNotificationHelper.showLiveNotification(this, stream)
 
             val channelId = data["channelId"]
-            val startedAt = data["startedAt"]?.let { com.github.andreyasadchy.xtra.util.TwitchApiHelper.parseIso8601DateUTC(it) } ?: System.currentTimeMillis()
+            val startedAt = data["startedAt"]?.let { kotlin.time.Instant.parseOrNull(it)?.toEpochMilliseconds() } ?: System.currentTimeMillis()
             if (channelId != null) {
                 CoroutineScope(Dispatchers.IO).launch {
                     try {

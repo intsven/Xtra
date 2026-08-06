@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.ext.SdkExtensions
 import android.provider.Settings
+import android.text.InputType
 import android.text.format.Formatter
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -81,6 +82,7 @@ import kotlinx.coroutines.launch
 import org.chromium.net.CronetProvider
 import java.util.Collections
 import java.util.Locale
+import kotlin.time.Duration.Companion.milliseconds
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -144,7 +146,7 @@ class SettingsActivity : AppCompatActivity() {
                 job?.cancel()
                 if (newText.isNotEmpty()) {
                     job = lifecycleScope.launch {
-                        delay(750)
+                        delay(750.milliseconds)
                         withResumed {
                             (supportFragmentManager.findFragmentById(R.id.navHostFragment)?.childFragmentManager?.fragments?.getOrNull(0) as? SettingsSearchFragment)?.search(newText)
                         }
@@ -396,6 +398,25 @@ class SettingsActivity : AppCompatActivity() {
                 requireActivity().findViewById<AppBarLayout>(R.id.appBar)?.setExpanded(true)
                 findNavController().navigate(SettingsNavGraphDirections.actionGlobalApiTokenSettingsFragment())
                 true
+            }
+            val httpEngine = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7
+            val cronet = CronetProvider.getAllProviders(requireContext()).any { it.isEnabled }
+            if (!httpEngine || !cronet) {
+                findPreference<ListPreference>(C.NETWORK_LIBRARY)?.apply {
+                    when {
+                        !httpEngine && !cronet -> {
+                            isVisible = false
+                        }
+                        !cronet -> {
+                            setEntries(R.array.networkLibraryEntriesNoCronet)
+                            setEntryValues(R.array.networkLibraryEntriesNoCronet)
+                        }
+                        else -> {
+                            setEntries(R.array.networkLibraryEntriesNoHttpEngine)
+                            setEntryValues(R.array.networkLibraryEntriesNoHttpEngine)
+                        }
+                    }
+                }
             }
             findPreference<Preference>("download_settings")?.setOnPreferenceClickListener {
                 requireActivity().findViewById<AppBarLayout>(R.id.appBar)?.setExpanded(true)
@@ -1061,6 +1082,28 @@ class SettingsActivity : AppCompatActivity() {
                 findNavController().navigate(SettingsNavGraphDirections.actionGlobalPlayerMenuSettingsFragment())
                 true
             }
+            findPreference<EditTextPreference>(C.PLAYER_REWIND)?.apply {
+                summary = getString(R.string.seconds_full, requireContext().prefs().getString(C.PLAYER_REWIND, "10"))
+                setOnPreferenceChangeListener { _, newValue ->
+                    summary = getString(R.string.seconds_full, newValue.toString())
+                    true
+                }
+                setOnBindEditTextListener {
+                    it.inputType = InputType.TYPE_CLASS_NUMBER
+                    it.setSelection(it.text.length)
+                }
+            }
+            findPreference<EditTextPreference>(C.PLAYER_FORWARD)?.apply {
+                summary = getString(R.string.seconds_full, requireContext().prefs().getString(C.PLAYER_FORWARD, "10"))
+                setOnPreferenceChangeListener { _, newValue ->
+                    summary = getString(R.string.seconds_full, newValue.toString())
+                    true
+                }
+                setOnBindEditTextListener {
+                    it.inputType = InputType.TYPE_CLASS_NUMBER
+                    it.setSelection(it.text.length)
+                }
+            }
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -1166,6 +1209,17 @@ class SettingsActivity : AppCompatActivity() {
     class ProxySettingsFragment : MaterialPreferenceFragment() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.proxy_preferences, rootKey)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN &&
+                ActivityCompat.checkSelfPermission(requireActivity(), Manifest.permission.ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED
+            ) {
+                findPreference<Preference>("request_local_network_permission")?.apply {
+                    isVisible = true
+                    setOnPreferenceClickListener {
+                        ActivityCompat.requestPermissions(requireActivity(), arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), 1)
+                        true
+                    }
+                }
+            }
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {

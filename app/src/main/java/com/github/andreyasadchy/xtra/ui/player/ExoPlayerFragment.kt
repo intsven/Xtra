@@ -29,8 +29,11 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.hls.HlsManifest
+import androidx.navigation.fragment.findNavController
 import com.github.andreyasadchy.xtra.R
 import com.github.andreyasadchy.xtra.model.VideoQuality
+import com.github.andreyasadchy.xtra.ui.game.GameMediaFragmentDirections
+import com.github.andreyasadchy.xtra.ui.game.GamePagerFragmentDirections
 import com.github.andreyasadchy.xtra.ui.main.MainActivity
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.getAlertDialogBuilder
@@ -62,8 +65,8 @@ class ExoPlayerFragment : PlayerFragment() {
                 setPipActions(!showPlayButton)
                 updateProgress()
                 controllerAutoHide = !showPlayButton
-                if (playbackService?.type != BasePlaybackService.STREAM && useController) {
-                    showController()
+                if (useController) {
+                    showController(show = playbackService?.type != BasePlaybackService.STREAM && playbackState == Player.STATE_ENDED)
                 }
             }
 
@@ -82,8 +85,8 @@ class ExoPlayerFragment : PlayerFragment() {
                 setPipActions(!showPlayButton)
                 updateProgress()
                 controllerAutoHide = !showPlayButton
-                if (playbackService?.type != BasePlaybackService.STREAM && useController) {
-                    showController()
+                if (useController) {
+                    showController(show = playbackService?.type != BasePlaybackService.STREAM && playbackService?.player?.playbackState == Player.STATE_ENDED)
                 }
             }
 
@@ -127,7 +130,9 @@ class ExoPlayerFragment : PlayerFragment() {
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
-                chatFragment?.updateSpeed(playbackParameters.speed)
+                if (chatFragment?.context != null) { // TODO
+                    chatFragment?.updateSpeed(playbackParameters.speed)
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -162,9 +167,17 @@ class ExoPlayerFragment : PlayerFragment() {
         val serviceListener = object : ExoPlayerService.Listener {
             override fun started() {
                 if (view != null) {
-                    if (!started && (isInitialized || !enableNetworkCheck)) {
-                        started = true
-                        start()
+                    if (!started) {
+                        if (isInitialized || !enableNetworkCheck) {
+                            started = true
+                            start()
+                        }
+                    } else {
+                        chatFragment?.startReplayChatLoad()
+                        if (playbackService?.restoreQuality == true) {
+                            playbackService?.restoreQuality = false
+                            changeQuality(playbackService?.previousQuality)
+                        }
                     }
                 }
             }
@@ -194,6 +207,41 @@ class ExoPlayerFragment : PlayerFragment() {
                     Toast.makeText(requireContext(), resId, duration).show()
                 }
             }
+
+            override fun updateVideoInfo() {
+                if (view != null) {
+                    with(binding.playerControls) {
+                        val titleText = playbackService?.title
+                        if (!titleText.isNullOrBlank() && requireContext().prefs().getBoolean(C.PLAYER_TITLE, true)) {
+                            title.visibility = View.VISIBLE
+                            title.text = titleText
+                        }
+                        val gameName = playbackService?.gameName
+                        if (!gameName.isNullOrBlank() && requireContext().prefs().getBoolean(C.PLAYER_CATEGORY, true)) {
+                            category.visibility = View.VISIBLE
+                            category.text = gameName
+                            category.setOnClickListener {
+                                findNavController().navigate(
+                                    if (requireContext().prefs().getBoolean(C.UI_GAME_PAGER, true)) {
+                                        GamePagerFragmentDirections.actionGlobalGamePagerFragment(
+                                            gameId = playbackService?.gameId,
+                                            gameSlug = playbackService?.gameSlug,
+                                            gameName = gameName
+                                        )
+                                    } else {
+                                        GameMediaFragmentDirections.actionGlobalGameMediaFragment(
+                                            gameId = playbackService?.gameId,
+                                            gameSlug = playbackService?.gameSlug,
+                                            gameName = gameName
+                                        )
+                                    }
+                                )
+                                minimize()
+                            }
+                        }
+                    }
+                }
+            }
         }
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -215,6 +263,7 @@ class ExoPlayerFragment : PlayerFragment() {
                             (activity as? MainActivity)?.closePlayer()
                         }
                     }
+                    playbackService?.setStopServiceTimer(false)
                     playbackService?.player?.let { player ->
                         if (!requireContext().prefs().getBoolean(C.PLAYER_KEEP_SCREEN_ON_WHEN_PAUSED, false) && canEnterPictureInPicture()) {
                             requireView().keepScreenOn = player.isPlaying
@@ -342,12 +391,14 @@ class ExoPlayerFragment : PlayerFragment() {
                 if (textTracks.isSelected) {
                     subtitles.setImageResource(androidx.media3.ui.R.drawable.exo_ic_subtitle_on)
                     subtitles.setOnClickListener {
+                        showController(force = true)
                         toggleSubtitles(false)
                         requireContext().prefs().edit { putBoolean(C.PLAYER_SUBTITLES_ENABLED, false) }
                     }
                 } else {
                     subtitles.setImageResource(androidx.media3.ui.R.drawable.exo_ic_subtitle_off)
                     subtitles.setOnClickListener {
+                        showController(force = true)
                         toggleSubtitles(true)
                         requireContext().prefs().edit { putBoolean(C.PLAYER_SUBTITLES_ENABLED, true) }
                     }
@@ -397,6 +448,7 @@ class ExoPlayerFragment : PlayerFragment() {
         if (playbackService != null) {
             playbackService?.startAudioOnly()
             playbackService?.setSleepTimer((activity as? MainActivity)?.getSleepTimerTimeLeft() ?: 0)
+            playbackService?.setStopServiceTimer(true)
         }
         playerListener?.let { playbackService?.player?.removeListener(it) }
         playerListener = null
@@ -435,6 +487,7 @@ class ExoPlayerFragment : PlayerFragment() {
             }
             playbackService?.stop(isInPIPMode)
             playbackService?.setSleepTimer((activity as? MainActivity)?.getSleepTimerTimeLeft() ?: 0)
+            playbackService?.setStopServiceTimer(true)
         }
         binding.playerControls.root.removeCallbacks(updateProgressAction)
         playerListener?.let { playbackService?.player?.removeListener(it) }

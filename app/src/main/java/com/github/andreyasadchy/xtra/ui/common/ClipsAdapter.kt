@@ -28,6 +28,7 @@ import com.github.andreyasadchy.xtra.ui.main.MainActivity
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import com.github.andreyasadchy.xtra.util.prefs
+import kotlin.time.Instant
 
 class ClipsAdapter(
     private val fragment: Fragment,
@@ -66,7 +67,10 @@ class ClipsAdapter(
                     root.setOnClickListener {
                         (fragment.activity as MainActivity).startClip(item)
                     }
-                    root.setOnLongClickListener { showDownloadDialog(item); true }
+                    root.setOnLongClickListener {
+                        showDownloadDialog(item)
+                        true
+                    }
                     fragment.requireContext().imageLoader.enqueue(
                         ImageRequest.Builder(fragment.requireContext()).apply {
                             data(item.thumbnail)
@@ -76,7 +80,9 @@ class ClipsAdapter(
                         }.build()
                     )
                     if (item.createdAt != null) {
-                        val text = item.createdAt.let { TwitchApiHelper.formatTimeString(context, it) }
+                        val text = Instant.parseOrNull(item.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.let {
+                            TwitchApiHelper.formatDate(context, it)
+                        }
                         if (text != null) {
                             date.visibility = View.VISIBLE
                             date.text = text
@@ -149,7 +155,7 @@ class ClipsAdapter(
                         userImage.visibility = View.GONE
                         username.visibility = View.GONE
                     }
-                    if (item.title != null && item.title != "") {
+                    if (!item.title.isNullOrBlank()) {
                         title.visibility = View.VISIBLE
                         title.text = item.title.trim()
                     } else {

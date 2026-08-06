@@ -1,5 +1,6 @@
 package com.github.andreyasadchy.xtra.ui.team
 
+import android.text.format.DateUtils
 import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
@@ -30,6 +31,8 @@ import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import com.github.andreyasadchy.xtra.util.prefs
 import com.google.android.material.R
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 class TeamMembersAdapter(
     private val fragment: Fragment,
@@ -110,9 +113,10 @@ class TeamMembersAdapter(
                         root.setOnClickListener {
                             (fragment.activity as MainActivity).startStream(item)
                         }
-                        if (item.title != null && item.title != "") {
+                        val streamTitle = item.title
+                        if (!streamTitle.isNullOrBlank()) {
                             title.visibility = View.VISIBLE
-                            title.text = item.title?.trim()
+                            title.text = streamTitle.trim()
                         } else {
                             title.visibility = View.GONE
                         }
@@ -141,7 +145,14 @@ class TeamMembersAdapter(
                             gameName.visibility = View.GONE
                         }
                         if (context.prefs().getBoolean(C.UI_UPTIME, true) && item.createdAt != null) {
-                            val text = TwitchApiHelper.getUptime(startedAt = item.createdAt)
+                            val text = item.createdAt?.let {
+                                Instant.parseOrNull(it)?.takeIf { time -> time.toEpochMilliseconds() > 0 }?.let { createdAt ->
+                                    val uptime = Clock.System.now() - createdAt
+                                    if (uptime.isPositive()) {
+                                        DateUtils.formatElapsedTime(uptime.inWholeSeconds)
+                                    } else null
+                                }
+                            }
                             if (text != null) {
                                 uptime.visibility = View.VISIBLE
                                 uptime.text = text

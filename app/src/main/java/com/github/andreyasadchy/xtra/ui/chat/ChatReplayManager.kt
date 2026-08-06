@@ -6,7 +6,6 @@ import com.github.andreyasadchy.xtra.model.chat.TwitchEmote
 import com.github.andreyasadchy.xtra.model.chat.VideoChatMessage
 import com.github.andreyasadchy.xtra.repository.GraphQLRepository
 import com.github.andreyasadchy.xtra.util.C
-import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,6 +14,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.max
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Instant
 
 class ChatReplayManager(
     private val networkLibrary: String?,
@@ -166,7 +167,7 @@ class ChatReplayManager(
                                 VideoChatMessage(
                                     id = item.id,
                                     offsetSeconds = item.contentOffsetSeconds,
-                                    createdAt = null,
+                                    createdAt = item.createdAt,
                                     userId = item.commenter?.id,
                                     userLogin = item.commenter?.login,
                                     userName = item.commenter?.displayName,
@@ -196,7 +197,7 @@ class ChatReplayManager(
             while (isActive) {
                 val message = list.firstOrNull() ?: break
                 val messageOffset = if (createdAt != null && !message.createdAt.isNullOrBlank()) {
-                    TwitchApiHelper.parseIso8601DateUTC(message.createdAt)?.minus(createdAt)
+                    Instant.parseOrNull(message.createdAt)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.minus(createdAt)
                 } else {
                     null
                 } ?: message.offsetSeconds?.times(1000L)
@@ -209,13 +210,14 @@ class ChatReplayManager(
                             currentPosition < messageOffset
                         }
                     ) {
-                        delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0))
+                        delay(max((messageOffset - currentPosition).div(playbackSpeed ?: 1f).toLong(), 0).milliseconds)
                     }
                     if (!isActive) {
                         break
                     }
                     listener.onChatMessage(
                         ChatMessage(
+                            type = ChatMessage.USER_MESSAGE,
                             id = message.id,
                             userId = message.userId,
                             userLogin = message.userLogin,

@@ -40,6 +40,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.trackPipAnimationHintView
 import androidx.annotation.OptIn
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -89,6 +90,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Instant
 
 @OptIn(UnstableApi::class)
 abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFragment.OnSortOptionChanged, IntegrityDialog.Listener {
@@ -593,11 +596,20 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 root.setOnTouchListener { _, event ->
                     controllerTapDetector.onTouchEvent(event)
                 }
-                playPause.setOnClickListener { playPause() }
-                rewind.text = ((requireContext().prefs().getString(C.PLAYER_REWIND, "10000")?.toLongOrNull() ?: 10000) / 1000).toString()
-                rewind.setOnClickListener { rewind() }
-                fastForward.text = ((requireContext().prefs().getString(C.PLAYER_FORWARD, "10000")?.toLongOrNull() ?: 10000) / 1000).toString()
-                fastForward.setOnClickListener { fastForward() }
+                playPause.setOnClickListener {
+                    showController(force = true)
+                    playPause()
+                }
+                rewind.text = (requireContext().prefs().getString(C.PLAYER_REWIND, "10")?.toLongOrNull() ?: 10).toString()
+                rewind.setOnClickListener {
+                    showController(force = true)
+                    rewind()
+                }
+                fastForward.text = (requireContext().prefs().getString(C.PLAYER_FORWARD, "10")?.toLongOrNull() ?: 10).toString()
+                fastForward.setOnClickListener {
+                    showController(force = true)
+                    fastForward()
+                }
                 progressBar.addListener(
                     object : TimeBar.OnScrubListener {
                         override fun onScrubStart(timeBar: TimeBar, position: Long) {
@@ -683,15 +695,22 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 }
                 if (requireContext().prefs().getBoolean(C.PLAYER_VOLUME_BUTTON, true)) {
                     volume.visibility = View.VISIBLE
-                    volume.setOnClickListener { showVolumeDialog() }
+                    volume.setOnClickListener {
+                        showController(force = true)
+                        showVolumeDialog()
+                    }
                 }
                 if (requireContext().prefs().getBoolean(C.PLAYER_SETTINGS, true)) {
                     quality.visibility = View.VISIBLE
-                    quality.setOnClickListener { showQualityDialog() }
+                    quality.setOnClickListener {
+                        showController(force = true)
+                        showQualityDialog()
+                    }
                 }
                 if (requireContext().prefs().getBoolean(C.PLAYER_MODE, false)) {
                     audioOnly.visibility = View.VISIBLE
                     audioOnly.setOnClickListener {
+                        showController(force = true)
                         if (viewModel.quality?.name == AUDIO_ONLY_QUALITY) {
                             changeQuality(viewModel.previousQuality)
                         } else {
@@ -708,12 +727,14 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                         audioCompressor.setImageResource(R.drawable.baseline_audio_compressor_off_24dp)
                     }
                     audioCompressor.setOnClickListener {
+                        showController(force = true)
                         toggleAudioCompressor()
                     }
                 }
                 if (requireContext().prefs().getBoolean(C.PLAYER_MENU, true)) {
                     menu.visibility = View.VISIBLE
                     menu.setOnClickListener {
+                        showController(force = true)
                         PlayerSettingsDialog.newInstance(
                             type = videoType,
                             speedText = getCurrentSpeed()?.let { speed ->
@@ -741,7 +762,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                     ) {
                         if (requireContext().prefs().getBoolean(C.PLAYER_CHAT_BAR_TOGGLE, false) && !requireContext().prefs().getBoolean(C.CHAT_DISABLE, false)) {
                             toggleChatInput.visibility = View.VISIBLE
-                            toggleChatInput.setOnClickListener { toggleChatBar() }
+                            toggleChatInput.setOnClickListener {
+                                showController(force = true)
+                                toggleChatBar()
+                            }
                         }
                         slidingLayout.viewTreeObserver.addOnGlobalLayoutListener {
                             if (slidingLayout.isKeyboardShown) {
@@ -788,7 +812,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                                         !uptimeLayout.isVisible
                                     ) {
                                         stream.createdAt?.let { date ->
-                                            TwitchApiHelper.parseIso8601DateUTC(date)?.let { startedAtMs ->
+                                            Instant.parseOrNull(date)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.let { startedAtMs ->
                                                 updateUptime(startedAtMs)
                                             }
                                         }
@@ -799,18 +823,27 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_RESTART, true)) {
                         restart.visibility = View.VISIBLE
-                        restart.setOnClickListener { restartPlayer() }
+                        restart.setOnClickListener {
+                            showController(force = true)
+                            restartPlayer()
+                        }
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_SEEK_LIVE, false)) {
                         seekLive.visibility = View.VISIBLE
-                        seekLive.setOnClickListener { seekToLivePosition() }
+                        seekLive.setOnClickListener {
+                            showController(force = true)
+                            seekToLivePosition()
+                        }
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_VIEWER_LIST, false)) {
-                        viewersLayout.setOnClickListener { openViewerList() }
+                        viewersLayout.setOnClickListener {
+                            showController(force = true)
+                            openViewerList()
+                        }
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_SHOW_UPTIME, true)) {
                         requireArguments().getString(KEY_STARTED_AT)?.let {
-                            TwitchApiHelper.parseIso8601DateUTC(it)?.let { startedAtMs ->
+                            Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }?.let { startedAtMs ->
                                 updateUptime(startedAtMs)
                             }
                         }
@@ -830,7 +863,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 } else {
                     if (requireContext().prefs().getBoolean(C.PLAYER_SPEED_BUTTON, true)) {
                         speed.visibility = View.VISIBLE
-                        speed.setOnClickListener { showSpeedDialog() }
+                        speed.setOnClickListener {
+                            showController(force = true)
+                            showSpeedDialog()
+                        }
                     }
                 }
                 if (videoType == VIDEO) {
@@ -873,7 +909,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                                     if (!list.isNullOrEmpty()) {
                                         if (requireContext().prefs().getBoolean(C.PLAYER_GAMES_BUTTON, true)) {
                                             vodGames.visibility = View.VISIBLE
-                                            vodGames.setOnClickListener { showVodGames() }
+                                            vodGames.setOnClickListener {
+                                                showController(force = true)
+                                                showVodGames()
+                                            }
                                         }
                                         (childFragmentManager.findFragmentByTag("closeOnPip") as? PlayerSettingsDialog?)?.setVodGames()
                                     }
@@ -894,6 +933,9 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                                         }
                                     }
                                     viewModel.qualities = filtered
+                                        .sortedByDescending {
+                                            it.bitrate
+                                        }
                                         .sortedByDescending {
                                             it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                                         }
@@ -946,7 +988,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 } else {
                     if (requireContext().prefs().getBoolean(C.PLAYER_SLEEP, false)) {
                         sleepTimer.visibility = View.VISIBLE
-                        sleepTimer.setOnClickListener { showSleepTimerDialog() }
+                        sleepTimer.setOnClickListener {
+                            showController(force = true)
+                            showSleepTimerDialog()
+                        }
                     }
                 }
                 if (videoType == OFFLINE_VIDEO) {
@@ -956,7 +1001,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                                 if (it != null) {
                                     val url = requireArguments().getString(KEY_URL)
                                     viewModel.qualities = listOf(
-                                        VideoQuality(SOURCE_QUALITY, null, url),
+                                        VideoQuality(SOURCE_QUALITY, url = url),
                                         VideoQuality(AUDIO_ONLY_QUALITY),
                                     )
                                     setDefaultQuality()
@@ -991,12 +1036,16 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_DOWNLOAD, false)) {
                         download.visibility = View.VISIBLE
-                        download.setOnClickListener { showDownloadDialog() }
+                        download.setOnClickListener {
+                            showController(force = true)
+                            showDownloadDialog()
+                        }
                     }
                     val setting = requireContext().prefs().getString(C.UI_FOLLOW_BUTTON, "0")?.toIntOrNull() ?: 0
                     if (requireContext().prefs().getBoolean(C.PLAYER_FOLLOW, false) && (setting == 0 || setting == 1)) {
                         follow.visibility = View.VISIBLE
                         follow.setOnClickListener {
+                            showController(force = true)
                             viewModel.isFollowing.value?.let {
                                 if (it) {
                                     requireContext().getAlertDialogBuilder()
@@ -1152,6 +1201,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                         fullscreen.visibility = View.VISIBLE
                         fullscreen.setImageResource(R.drawable.baseline_fullscreen_black_24)
                         fullscreen.setOnClickListener {
+                            showController(force = true)
                             requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                         }
                     }
@@ -1226,22 +1276,32 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                         fullscreen.visibility = View.VISIBLE
                         fullscreen.setImageResource(R.drawable.baseline_fullscreen_exit_black_24)
                         fullscreen.setOnClickListener {
+                            showController(force = true)
                             requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                             requireActivity().requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                         }
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_ASPECT, true)) {
                         aspectRatio.visibility = View.VISIBLE
-                        aspectRatio.setOnClickListener { setResizeMode() }
+                        aspectRatio.setOnClickListener {
+                            showController(force = true)
+                            setResizeMode()
+                        }
                     }
                     if (requireContext().prefs().getBoolean(C.PLAYER_CHAT_TOGGLE, true) && !requireContext().prefs().getBoolean(C.CHAT_DISABLE, false)) {
                         toggleChat.visibility = View.VISIBLE
                         if (isChatOpen) {
                             toggleChat.setImageResource(R.drawable.baseline_speaker_notes_off_black_24)
-                            toggleChat.setOnClickListener { hideChat() }
+                            toggleChat.setOnClickListener {
+                                showController(force = true)
+                                hideChat()
+                            }
                         } else {
                             toggleChat.setImageResource(R.drawable.baseline_speaker_notes_black_24)
-                            toggleChat.setOnClickListener { showChat() }
+                            toggleChat.setOnClickListener {
+                                showController(force = true)
+                                showChat()
+                            }
                         }
                     }
                 }
@@ -1287,14 +1347,14 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
         }
     }
 
-    fun getQualityMap(): Map<String, VideoQuality>? {
+    fun getQualities(): List<Pair<String, VideoQuality>>? {
         val qualities = viewModel.qualities
         return if (!qualities.isNullOrEmpty()) {
             val hideCodecs = qualities.all {
                 val codec = it.codecs?.substringBefore('.')
                 codec == "avc1" || codec == "mp4a" || codec.isNullOrBlank()
             }
-            qualities.associateBy { quality ->
+            qualities.map { quality ->
                 when (quality.name) {
                     "auto" -> getString(R.string.auto)
                     "source" -> getString(R.string.source)
@@ -1314,19 +1374,20 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                             "${quality.name} $codecName"
                         }
                     }
-                }
+                } to quality
             }
         } else null
     }
 
     fun showQualityDialog() {
-        val qualities = getQualityMap()
+        val qualities = getQualities()
         if (!qualities.isNullOrEmpty()) {
             RadioButtonDialogFragment.newInstance(
                 REQUEST_CODE_QUALITY,
-                qualities.keys,
-                qualities.values.map { it.name.toString() }.toTypedArray(),
-                qualities.values.indexOf(viewModel.quality)
+                qualities.map { it.first },
+                qualities.map { it.second.name.toString() }.toTypedArray(),
+                qualities.map { it.second.url.toString() }.toTypedArray(),
+                qualities.indexOf(qualities.find { it.second.name == viewModel.quality?.name && it.second.url == viewModel.quality?.url })
             ).show(childFragmentManager, "closeOnPip")
         }
     }
@@ -1339,8 +1400,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 RadioButtonDialogFragment.newInstance(
                     REQUEST_CODE_SPEED,
                     speedList,
-                    null,
-                    speedList.indexOf(speed.toString())
+                    checkedIndex = speedList.indexOf(speed.toString())
                 ).show(childFragmentManager, "closeOnPip")
             }
         }
@@ -1394,7 +1454,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
             binding.playerControls.toggleChat.apply {
                 visibility = View.VISIBLE
                 setImageResource(R.drawable.baseline_speaker_notes_black_24)
-                setOnClickListener { showChat() }
+                setOnClickListener {
+                    showController(force = true)
+                    showChat()
+                }
             }
         }
         requireContext().prefs().edit { putBoolean(C.KEY_CHAT_OPENED, false) }
@@ -1407,7 +1470,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
             binding.playerControls.toggleChat.apply {
                 visibility = View.VISIBLE
                 setImageResource(R.drawable.baseline_speaker_notes_off_black_24)
-                setOnClickListener { hideChat() }
+                setOnClickListener {
+                    showController(force = true)
+                    hideChat()
+                }
             }
         }
         requireContext().prefs().edit { putBoolean(C.KEY_CHAT_OPENED, true) }
@@ -1449,7 +1515,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
 
     fun setQualityText() {
         (childFragmentManager.findFragmentByTag("closeOnPip") as? PlayerSettingsDialog?)?.setQuality(
-            getQualityMap()?.entries?.find { it.value == viewModel.quality }?.key
+            getQualities()?.find { it.second == viewModel.quality }?.first
         )
     }
 
@@ -1576,6 +1642,74 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
             gameSlug = requireArguments().getString(KEY_GAME_SLUG),
             gameName = requireArguments().getString(KEY_GAME_NAME),
         )
+    }
+
+    fun share() {
+        when (videoType) {
+            STREAM -> {
+                requireArguments().getString(KEY_CHANNEL_LOGIN)?.let { channelLogin ->
+                    startActivity(Intent.createChooser(Intent().apply {
+                        action = Intent.ACTION_SEND
+                        putExtra(Intent.EXTRA_TEXT, "https://twitch.tv/${channelLogin}")
+                        requireArguments().getString(KEY_CHANNEL_NAME)?.let {
+                            putExtra(Intent.EXTRA_TITLE, it)
+                        }
+                        type = "text/plain"
+                    }, null))
+                }
+            }
+            VIDEO -> {
+                requireArguments().getString(KEY_VIDEO_ID)?.let { videoId ->
+                    val position = getCurrentPosition()?.let { position ->
+                        val totalSeconds = position / 1000
+                        val hours = (totalSeconds / 3600).let { if (it < 10) "0$it" else "$it" }
+                        val minutes = ((totalSeconds % 3600) / 60).let { if (it < 10) "0$it" else "$it" }
+                        val seconds = (totalSeconds % 60).let { if (it < 10) "0$it" else "$it" }
+                        "?t=${hours}h${minutes}m${seconds}s"
+                    } ?: ""
+                    startActivity(Intent.createChooser(Intent().apply {
+                        action = Intent.ACTION_SEND
+                        putExtra(Intent.EXTRA_TEXT, "https://twitch.tv/videos/${videoId}${position}")
+                        requireArguments().getString(KEY_TITLE)?.let {
+                            putExtra(Intent.EXTRA_TITLE, it)
+                        }
+                        type = "text/plain"
+                    }, null))
+                }
+            }
+            CLIP -> {
+                requireArguments().getString(KEY_CLIP_ID)?.let { clipId ->
+                    requireArguments().getString(KEY_CHANNEL_LOGIN)?.let { channelLogin ->
+                        startActivity(Intent.createChooser(Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, "https://twitch.tv/${channelLogin}/clip/${clipId}")
+                            requireArguments().getString(KEY_TITLE)?.let {
+                                putExtra(Intent.EXTRA_TITLE, it)
+                            }
+                            type = "text/plain"
+                        }, null))
+                    }
+                }
+            }
+            OFFLINE_VIDEO -> {
+                viewModel.quality?.url?.let { videoUrl ->
+                    val uri = if (videoUrl.endsWith(".m3u8")) {
+                        videoUrl.substringBefore("%2F").toUri()
+                    } else {
+                        videoUrl.toUri()
+                    }
+                    startActivity(Intent.createChooser(Intent().apply {
+                        action = Intent.ACTION_SEND
+                        setDataAndType(uri, requireContext().contentResolver.getType(uri))
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                        requireArguments().getString(KEY_TITLE)?.let {
+                            putExtra(Intent.EXTRA_TITLE, it)
+                        }
+                    }, null))
+                }
+            }
+        }
     }
 
     protected fun setDefaultQuality() {
@@ -1991,9 +2125,12 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
             requireArguments().getString(KEY_VIDEO_ANIMATED_PREVIEW)?.let { preview ->
                 val urls = TwitchApiHelper.getVideoUrlsFromPreview(preview, requireArguments().getString(KEY_VIDEO_TYPE), viewModel.backupQualities)
                 val list = urls.map {
-                    VideoQuality(it.key, null, it.value)
+                    VideoQuality(it.key, url = it.value)
                 }
                 viewModel.qualities = list
+                    .sortedByDescending {
+                        it.bitrate
+                    }
                     .sortedByDescending {
                         it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                     }
@@ -2003,12 +2140,11 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                     .toMutableList().apply {
                         find { it.name.equals("source", true) }?.let { source ->
                             remove(source)
-                            add(0, VideoQuality(SOURCE_QUALITY, source.codecs, source.url))
+                            add(0, VideoQuality(SOURCE_QUALITY, source.codecs, source.bitrate, source.url))
                         }
-                        val audio = find { it.name?.startsWith("audio", true) == true }?.also {
-                            remove(it)
-                        }
-                        add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.url))
+                        val audio = find { it.name?.startsWith("audio", true) == true }
+                        audio?.let { remove(it) }
+                        add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.bitrate, audio?.url))
                     }
                 viewModel.quality = viewModel.qualities?.firstOrNull()
                 viewModel.quality?.url
@@ -2174,7 +2310,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                 }
                 val activity = requireActivity()
                 activity.lifecycleScope.launch {
-                    delay(500L)
+                    delay(500.milliseconds)
                     activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 }
             }
@@ -2247,6 +2383,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                         createdAt = requireArguments().getString(KEY_STARTED_AT),
                         qualityNames = qualities?.map { it.name.toString() }?.toTypedArray(),
                         qualityCodecs = qualities?.map { it.codecs.toString() }?.toTypedArray(),
+                        qualityBitrates = qualities?.map { it.bitrate.toString() }?.toTypedArray(),
                         qualityUrls = qualities?.map { it.url.toString() }?.toTypedArray(),
                     ).show(childFragmentManager, null)
                 }
@@ -2273,6 +2410,7 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
                         videoCreatedAt = requireArguments().getString(KEY_VIDEO_CREATED_AT),
                         qualityNames = qualities?.map { it.name.toString() }?.toTypedArray(),
                         qualityCodecs = qualities?.map { it.codecs.toString() }?.toTypedArray(),
+                        qualityBitrates = qualities?.map { it.bitrate.toString() }?.toTypedArray(),
                         qualityUrls = qualities?.map { it.url.toString() }?.toTypedArray(),
                     ).show(childFragmentManager, null)
                 }
@@ -2310,10 +2448,10 @@ abstract class Media3PlayerFragment : BaseNetworkFragment(), RadioButtonDialogFr
         (activity as? MainActivity)?.setSleepTimer(durationMs)
     }
 
-    override fun onChange(requestCode: Int, index: Int, text: CharSequence, tag: String?) {
+    override fun onChange(requestCode: Int, index: Int, text: CharSequence, tag: String?, tag2: String?) {
         when (requestCode) {
             REQUEST_CODE_QUALITY -> {
-                changeQuality(viewModel.qualities?.find { it.name == tag })
+                changeQuality(viewModel.qualities?.find { it.name == tag && it.url == tag2 })
                 changePlayerMode()
                 setQualityText()
             }

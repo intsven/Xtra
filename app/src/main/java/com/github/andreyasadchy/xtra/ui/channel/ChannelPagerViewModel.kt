@@ -1,8 +1,7 @@
 package com.github.andreyasadchy.xtra.ui.channel
 
+import android.annotation.SuppressLint
 import android.net.http.HttpEngine
-import android.os.Build
-import android.os.ext.SdkExtensions
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -25,7 +24,6 @@ import com.github.andreyasadchy.xtra.repository.OfflineVideosRepository
 import com.github.andreyasadchy.xtra.util.C
 import com.github.andreyasadchy.xtra.util.NetworkUtils
 import com.github.andreyasadchy.xtra.util.NetworkUtils.executeAsync
-import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +36,7 @@ import org.chromium.net.CronetEngine
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.ExecutorService
+import kotlin.time.Instant
 
 class ChannelPagerViewModel(
     private val localChannelFollowsRepository: LocalChannelFollowsRepository,
@@ -163,37 +162,43 @@ class ChannelPagerViewModel(
         }
     }
 
-    fun enableNotifications(userId: String?, channelId: String, setting: Int, notificationsEnabled: Boolean, networkLibrary: String?, gqlHeaders: Map<String, String>, enableIntegrity: Boolean) {
+    fun enableNotifications(userId: String?, channelId: String?, setting: Int, notificationsEnabled: Boolean, networkLibrary: String?, gqlHeaders: Map<String, String>, enableIntegrity: Boolean) {
         viewModelScope.launch {
             try {
-                if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank() && _isFollowing.value == true && userId != channelId) {
-                    val errorMessage = graphQLRepository.loadToggleNotificationsUser(networkLibrary, gqlHeaders, channelId, false).also { response ->
-                        if (enableIntegrity) {
-                            response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
-                                integrity.emit("enableNotifications")
-                                return@launch
+                if (!channelId.isNullOrBlank()) {
+                    if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank() && userId != channelId && _isFollowing.value == true) {
+                        val errorMessage = graphQLRepository.loadToggleNotificationsUser(networkLibrary, gqlHeaders, channelId, false).also { response ->
+                            if (enableIntegrity) {
+                                response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
+                                    integrity.emit("enableNotifications")
+                                    return@launch
+                                }
+                            }
+                        }.errors?.firstOrNull()?.message
+                        if (!errorMessage.isNullOrBlank()) {
+                            notifications.value = Pair(true, errorMessage)
+                        } else {
+                            _notificationsEnabled.value = true
+                            notifications.value = Pair(true, errorMessage)
+                            if (notificationsEnabled) {
+                                _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let {
+                                    Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }
+                                }?.let {
+                                    notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
+                                }
                             }
                         }
-                    }.errors?.firstOrNull()?.message
-                    if (!errorMessage.isNullOrBlank()) {
-                        notifications.value = Pair(true, errorMessage)
                     } else {
+                        notificationsRepository.saveUser(NotificationUser(channelId))
                         _notificationsEnabled.value = true
-                        notifications.value = Pair(true, errorMessage)
+                        notifications.value = Pair(true, null)
                         notificationsRepository.saveUser(NotificationUser(channelId))
                         if (notificationsEnabled) {
-                            _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
+                            _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let {
+                                Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }
+                            }?.let {
                                 notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
                             }
-                        }
-                    }
-                } else {
-                    notificationsRepository.saveUser(NotificationUser(channelId))
-                    _notificationsEnabled.value = true
-                    notifications.value = Pair(true, null)
-                    if (notificationsEnabled) {
-                        _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
-                            notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
                         }
                     }
                 }
@@ -203,29 +208,31 @@ class ChannelPagerViewModel(
         }
     }
 
-    fun disableNotifications(userId: String?, channelId: String, setting: Int, networkLibrary: String?, gqlHeaders: Map<String, String>, enableIntegrity: Boolean) {
+    fun disableNotifications(userId: String?, channelId: String?, setting: Int, networkLibrary: String?, gqlHeaders: Map<String, String>, enableIntegrity: Boolean) {
         viewModelScope.launch {
             try {
-                if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank() && _isFollowing.value == true && userId != channelId) {
-                    val errorMessage = graphQLRepository.loadToggleNotificationsUser(networkLibrary, gqlHeaders, channelId, true).also { response ->
-                        if (enableIntegrity) {
-                            response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
-                                integrity.emit("disableNotifications")
-                                return@launch
+                if (!channelId.isNullOrBlank()) {
+                    if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank() && userId != channelId && _isFollowing.value == true) {
+                        val errorMessage = graphQLRepository.loadToggleNotificationsUser(networkLibrary, gqlHeaders, channelId, true).also { response ->
+                            if (enableIntegrity) {
+                                response.errors?.find { it.message == C.FAILED_INTEGRITY_CHECK }?.let {
+                                    integrity.emit("disableNotifications")
+                                    return@launch
+                                }
                             }
+                        }.errors?.firstOrNull()?.message
+                        if (!errorMessage.isNullOrBlank()) {
+                            notifications.value = Pair(false, errorMessage)
+                        } else {
+                            _notificationsEnabled.value = false
+                            notifications.value = Pair(false, errorMessage)
                         }
-                    }.errors?.firstOrNull()?.message
-                    if (!errorMessage.isNullOrBlank()) {
-                        notifications.value = Pair(false, errorMessage)
                     } else {
+                        notificationsRepository.deleteUser(NotificationUser(channelId))
                         _notificationsEnabled.value = false
-                        notifications.value = Pair(false, errorMessage)
+                        notifications.value = Pair(false, null)
                         notificationsRepository.deleteUser(NotificationUser(channelId))
                     }
-                } else {
-                    notificationsRepository.deleteUser(NotificationUser(channelId))
-                    _notificationsEnabled.value = false
-                    notifications.value = Pair(false, null)
                 }
             } catch (e: Exception) {
 
@@ -244,27 +251,15 @@ class ChannelPagerViewModel(
             viewModelScope.launch {
                 try {
                     if (!channelId.isNullOrBlank()) {
-                        if (setting == 0 && !userId.isNullOrBlank() && userId != channelId) {
-                            try {
-                                if (gqlHeaders[C.HEADER_TOKEN].isNullOrBlank()) throw Exception()
-                                val follower = graphQLRepository.loadQueryFollowingUser(
-                                    networkLibrary = networkLibrary,
-                                    headers = gqlHeaders,
-                                    id = channelId,
-                                    login = channelLogin.takeIf { channelId.isBlank() },
-                                ).data?.user?.self?.follower
-                                _isFollowing.value = follower?.followedAt != null
-                                _notificationsEnabled.value = follower?.notificationSettings?.isEnabled == true
-                            } catch (e: Exception) {
-                                val following = helixRepository.getUserFollows(
-                                    networkLibrary = networkLibrary,
-                                    headers = helixHeaders,
-                                    userId = userId,
-                                    targetId = channelId,
-                                ).data.firstOrNull()?.id == channelId
-                                _isFollowing.value = following
-                                _notificationsEnabled.value = notificationsRepository.getUserById(channelId) != null
-                            }
+                        if (setting == 0 && !gqlHeaders[C.HEADER_TOKEN].isNullOrBlank() && userId != channelId) {
+                            val follower = graphQLRepository.loadQueryFollowingUser(
+                                networkLibrary = networkLibrary,
+                                headers = gqlHeaders,
+                                id = channelId,
+                                login = channelLogin.takeIf { channelId.isBlank() },
+                            ).data?.user?.self?.follower
+                            _isFollowing.value = follower?.followedAt != null
+                            _notificationsEnabled.value = follower?.notificationSettings?.isEnabled == true
                         } else {
                             _isFollowing.value = localChannelFollowsRepository.getById(channelId) != null
                             _notificationsEnabled.value = notificationsRepository.getUserById(channelId) != null
@@ -299,7 +294,9 @@ class ChannelPagerViewModel(
                                 _notificationsEnabled.value = true
                             }
                             if (liveNotificationsEnabled) {
-                                _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
+                                _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let {
+                                    Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }
+                                }?.let {
                                     notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
                                 }
                             }
@@ -313,7 +310,9 @@ class ChannelPagerViewModel(
                             _notificationsEnabled.value = true
                         }
                         if (liveNotificationsEnabled) {
-                            _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
+                            _stream.value?.createdAt.takeUnless { it.isNullOrBlank() }?.let {
+                                Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }
+                            }?.let {
                                 notificationsRepository.saveList(listOf(ShownNotification(channelId, it)))
                             }
                         }
@@ -364,34 +363,56 @@ class ChannelPagerViewModel(
             updatedLocalUser = true
             user.id.takeIf { !it.isNullOrBlank() }?.let { userId ->
                 viewModelScope.launch {
-                    val downloadedLogo = user.profileImage.takeIf { !it.isNullOrBlank() }?.let {
+                    val downloadedLogo = user.profileImage.takeIf { !it.isNullOrBlank() }?.let { url ->
                         File(filesDir, "profile_pics").mkdir()
                         val path = filesDir + File.separator + "profile_pics" + File.separator + userId
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                            val timeout = NetworkUtils.HttpEngineTimeout()
+                                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                cronetExecutor.value,
+                                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                            val timeout = NetworkUtils.CronetTimeout()
+                                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                cronetExecutor.value
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     else -> {
-                                        okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                        okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                             if (response.isSuccessful) {
                                                 FileOutputStream(path).use { outputStream ->
                                                     response.body.byteStream().use { inputStream ->

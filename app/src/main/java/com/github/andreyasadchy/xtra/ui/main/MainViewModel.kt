@@ -1,5 +1,6 @@
 package com.github.andreyasadchy.xtra.ui.main
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
@@ -9,8 +10,6 @@ import android.content.pm.PackageInstaller
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.http.HttpEngine
-import android.os.Build
-import android.os.ext.SdkExtensions
 import android.widget.Toast
 import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
@@ -42,11 +41,14 @@ import com.github.andreyasadchy.xtra.util.TwitchApiHelper
 import com.github.andreyasadchy.xtra.util.tokenPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -59,9 +61,12 @@ import okhttp3.Request
 import org.chromium.net.CronetEngine
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.Timer
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutorService
 import kotlin.math.max
+import kotlin.time.Instant
 
 class MainViewModel(
     private val applicationContext: Context,
@@ -93,6 +98,7 @@ class MainViewModel(
     var sleepTimer: Timer? = null
     var sleepTimerEndTime = 0L
 
+    val videoUrl = MutableStateFlow<String?>(null)
     val video = MutableStateFlow<Pair<Video?, Long?>?>(null)
     val clip = MutableStateFlow<Clip?>(null)
     val user = MutableStateFlow<User?>(null)
@@ -124,6 +130,104 @@ class MainViewModel(
 
     suspend fun getWaitingDownloads(): List<OfflineVideo> {
         return offlineVideosRepository.getWaitingDownloads()
+    }
+
+    fun findVideoUrl(networkLibrary: String?, streamId: String?, channelLogin: String?, streamCreatedAt: String?) {
+        val createdAtSeconds = streamCreatedAt?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { time -> time > 0 }?.div(1000) }
+        if (streamId != null && channelLogin != null && createdAtSeconds != null) {
+            val data = "${channelLogin}_${streamId}_${createdAtSeconds}"
+            val messageDigest = MessageDigest.getInstance("SHA-1")
+            messageDigest.update(data.toByteArray())
+            val hash = messageDigest.digest().toHexString().take(20)
+            viewModelScope.launch(Dispatchers.IO) {
+                val semaphore = Semaphore(10)
+                val jobs = mutableListOf<Job>()
+                val result = MutableStateFlow<String?>(null)
+                for (domain in TwitchApiHelper.vodDomains) {
+                    semaphore.acquire()
+                    if (result.value != null) {
+                        break
+                    }
+                    val url = "${domain}/${hash}_${data}/chunked/index-dvr.m3u8"
+                    jobs.add(
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                when {
+                                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
+                                        val response = suspendCancellableCoroutine { continuation ->
+                                            val timeout = NetworkUtils.HttpEngineTimeout()
+                                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                cronetExecutor.value,
+                                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
+                                        }
+                                        if (response.info.httpStatusCode in 200..299) {
+                                            result.value = url
+                                            jobs.forEach {
+                                                it.cancel()
+                                            }
+                                        }
+                                    }
+                                    networkLibrary == C.CRONET && cronetEngine.value != null -> {
+                                        val response = suspendCancellableCoroutine { continuation ->
+                                            val timeout = NetworkUtils.CronetTimeout()
+                                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                cronetExecutor.value
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
+                                        }
+                                        if (response.info.httpStatusCode in 200..299) {
+                                            result.value = url
+                                            jobs.forEach {
+                                                it.cancel()
+                                            }
+                                        }
+                                    }
+                                    else -> {
+                                        okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
+                                            if (response.isSuccessful) {
+                                                result.value = url
+                                                jobs.forEach {
+                                                    it.cancel()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e: CancellationException) {
+                                ensureActive()
+                            } catch (e: Exception) {
+
+                            }
+                        }.also {
+                            it.invokeOnCompletion {
+                                semaphore.release()
+                            }
+                        }
+                    )
+                }
+                jobs.joinAll()
+                videoUrl.value = if (result.value != null) {
+                    result.value
+                } else {
+                    ""
+                }
+            }
+        }
     }
 
     fun loadVideo(videoId: String?, offset: Long?, networkLibrary: String?, gqlHeaders: Map<String, String>, helixHeaders: Map<String, String>, enableIntegrity: Boolean) {
@@ -171,8 +275,8 @@ class MainViewModel(
                                     channelLogin = it.channelLogin,
                                     channelName = it.channelName,
                                     title = it.title,
-                                    createdAt = it.createdAt,
                                     thumbnailURL = it.thumbnailURL,
+                                    createdAt = it.createdAt,
                                     viewCount = it.viewCount,
                                     durationSeconds = it.duration?.let { duration -> TwitchApiHelper.getDuration(duration) },
                                 )
@@ -195,6 +299,12 @@ class MainViewModel(
 
     suspend fun savePosition(id: Long, position: Long) {
         playerRepository.saveVideoPosition(VideoPosition(id, position))
+    }
+
+    fun saveOfflineVideoPosition(id: Int, position: Long) {
+        viewModelScope.launch {
+            offlineVideosRepository.updatePosition(id, position)
+        }
     }
 
     fun loadClip(clipId: String?, networkLibrary: String?, gqlHeaders: Map<String, String>, helixHeaders: Map<String, String>, enableIntegrity: Boolean) {
@@ -436,34 +546,56 @@ class MainViewModel(
         viewModelScope.launch {
             if (!channelLogin.isNullOrBlank()) {
                 val downloadedThumbnail = id.takeIf { !it.isNullOrBlank() }?.let { id ->
-                    thumbnail.takeIf { !it.isNullOrBlank() }?.let {
+                    thumbnail.takeIf { !it.isNullOrBlank() }?.let { url ->
                         File(filesDir, "thumbnails").mkdir()
                         val path = filesDir + File.separator + "thumbnails" + File.separator + id
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                            val timeout = NetworkUtils.HttpEngineTimeout()
+                                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                cronetExecutor.value,
+                                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                            val timeout = NetworkUtils.CronetTimeout()
+                                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                cronetExecutor.value
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     else -> {
-                                        okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                        okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                             if (response.isSuccessful) {
                                                 FileOutputStream(path).use { outputStream ->
                                                     response.body.byteStream().use { inputStream ->
@@ -482,34 +614,56 @@ class MainViewModel(
                     }
                 }
                 val downloadedLogo = channelId.takeIf { !it.isNullOrBlank() }?.let { id ->
-                    channelImage.takeIf { !it.isNullOrBlank() }?.let {
+                    channelImage.takeIf { !it.isNullOrBlank() }?.let { url ->
                         File(filesDir, "profile_pics").mkdir()
                         val path = filesDir + File.separator + "profile_pics" + File.separator + id
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
                                 when {
-                                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                            val timeout = NetworkUtils.HttpEngineTimeout()
+                                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                cronetExecutor.value,
+                                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                         val response = suspendCancellableCoroutine { continuation ->
-                                            cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                            val timeout = NetworkUtils.CronetTimeout()
+                                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                                url,
+                                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                                cronetExecutor.value
+                                            ).build()
+                                            timeout.start(request, continuation)
+                                            request.start()
+                                            continuation.invokeOnCancellation {
+                                                request.cancel()
+                                                timeout.stop()
+                                            }
                                         }
-                                        if (response.first.httpStatusCode in 200..299) {
+                                        if (response.info.httpStatusCode in 200..299) {
                                             FileOutputStream(path).use {
-                                                it.write(response.second)
+                                                it.write(response.body)
                                             }
                                         }
                                     }
                                     else -> {
-                                        okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                        okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                             if (response.isSuccessful) {
                                                 FileOutputStream(path).use { outputStream ->
                                                     response.body.byteStream().use { inputStream ->
@@ -543,7 +697,7 @@ class MainViewModel(
                         gameId = gameId,
                         gameSlug = gameSlug,
                         gameName = gameName,
-                        uploadDate = createdAt?.let { TwitchApiHelper.parseIso8601DateUTC(it) },
+                        uploadDate = createdAt?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } },
                         downloadDate = System.currentTimeMillis(),
                         downloadPath = downloadPath,
                         status = if (waitForWifi) {
@@ -567,34 +721,56 @@ class MainViewModel(
     fun downloadVideo(networkLibrary: String?, filesDir: String, id: String?, title: String?, createdAt: String?, type: String?, channelId: String?, channelLogin: String?, channelName: String?, channelImage: String?, thumbnail: String?, gameId: String?, gameSlug: String?, gameName: String?, url: String, downloadPath: String, quality: String, from: Long, to: Long, downloadChat: Boolean, downloadChatEmotes: Boolean, playlistToFile: Boolean, wifiOnly: Boolean) {
         viewModelScope.launch {
             val downloadedThumbnail = id.takeIf { !it.isNullOrBlank() }?.let { id ->
-                thumbnail.takeIf { !it.isNullOrBlank() }?.let {
+                thumbnail.takeIf { !it.isNullOrBlank() }?.let { url ->
                     File(filesDir, "thumbnails").mkdir()
                     val path = filesDir + File.separator + "thumbnails" + File.separator + id
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 else -> {
-                                    okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                    okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                         if (response.isSuccessful) {
                                             FileOutputStream(path).use { outputStream ->
                                                 response.body.byteStream().use { inputStream ->
@@ -613,34 +789,56 @@ class MainViewModel(
                 }
             }
             val downloadedLogo = channelId.takeIf { !it.isNullOrBlank() }?.let { id ->
-                channelImage.takeIf { !it.isNullOrBlank() }?.let {
+                channelImage.takeIf { !it.isNullOrBlank() }?.let { url ->
                     File(filesDir, "profile_pics").mkdir()
                     val path = filesDir + File.separator + "profile_pics" + File.separator + id
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 else -> {
-                                    okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                    okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                         if (response.isSuccessful) {
                                             FileOutputStream(path).use { outputStream ->
                                                 response.body.byteStream().use { inputStream ->
@@ -675,7 +873,7 @@ class MainViewModel(
                     gameId = gameId,
                     gameSlug = gameSlug,
                     gameName = gameName,
-                    uploadDate = createdAt?.let { TwitchApiHelper.parseIso8601DateUTC(it) },
+                    uploadDate = createdAt?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } },
                     downloadDate = System.currentTimeMillis(),
                     downloadPath = downloadPath,
                     fromTime = from,
@@ -702,34 +900,56 @@ class MainViewModel(
     fun downloadClip(networkLibrary: String?, filesDir: String, clipId: String?, title: String?, createdAt: String?, durationSeconds: Int?, videoId: String?, videoOffsetSeconds: Int?, videoCreatedAt: String?, channelId: String?, channelLogin: String?, channelName: String?, channelImage: String?, thumbnail: String?, gameId: String?, gameSlug: String?, gameName: String?, url: String, downloadPath: String, quality: String, downloadChat: Boolean, downloadChatEmotes: Boolean, wifiOnly: Boolean) {
         viewModelScope.launch {
             val downloadedThumbnail = clipId.takeIf { !it.isNullOrBlank() }?.let { id ->
-                thumbnail.takeIf { !it.isNullOrBlank() }?.let {
+                thumbnail.takeIf { !it.isNullOrBlank() }?.let { url ->
                     File(filesDir, "thumbnails").mkdir()
                     val path = filesDir + File.separator + "thumbnails" + File.separator + id
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 else -> {
-                                    okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                    okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                         if (response.isSuccessful) {
                                             FileOutputStream(path).use { outputStream ->
                                                 response.body.byteStream().use { inputStream ->
@@ -748,34 +968,56 @@ class MainViewModel(
                 }
             }
             val downloadedLogo = channelId.takeIf { !it.isNullOrBlank() }?.let { id ->
-                channelImage.takeIf { !it.isNullOrBlank() }?.let {
+                channelImage.takeIf { !it.isNullOrBlank() }?.let { url ->
                     File(filesDir, "profile_pics").mkdir()
                     val path = filesDir + File.separator + "profile_pics" + File.separator + id
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             when {
-                                networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                                networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        httpEngine.value!!.newUrlRequestBuilder(it, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                        val timeout = NetworkUtils.HttpEngineTimeout()
+                                        val request = httpEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            cronetExecutor.value,
+                                            NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 networkLibrary == C.CRONET && cronetEngine.value != null -> {
                                     val response = suspendCancellableCoroutine { continuation ->
-                                        cronetEngine.value!!.newUrlRequestBuilder(it, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                        val timeout = NetworkUtils.CronetTimeout()
+                                        val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                            url,
+                                            NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                            cronetExecutor.value
+                                        ).build()
+                                        timeout.start(request, continuation)
+                                        request.start()
+                                        continuation.invokeOnCancellation {
+                                            request.cancel()
+                                            timeout.stop()
+                                        }
                                     }
-                                    if (response.first.httpStatusCode in 200..299) {
+                                    if (response.info.httpStatusCode in 200..299) {
                                         FileOutputStream(path).use {
-                                            it.write(response.second)
+                                            it.write(response.body)
                                         }
                                     }
                                 }
                                 else -> {
-                                    okHttpClient.value.newCall(Request.Builder().url(it).build()).executeAsync().use { response ->
+                                    okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                                         if (response.isSuccessful) {
                                             FileOutputStream(path).use { outputStream ->
                                                 response.body.byteStream().use { inputStream ->
@@ -812,7 +1054,7 @@ class MainViewModel(
                     gameSlug = gameSlug,
                     gameName = gameName,
                     duration = durationSeconds?.times(1000L),
-                    uploadDate = createdAt?.let { TwitchApiHelper.parseIso8601DateUTC(it) },
+                    uploadDate = createdAt?.let { Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 } },
                     downloadDate = System.currentTimeMillis(),
                     downloadPath = downloadPath,
                     status = if (waitForWifi) {
@@ -893,17 +1135,39 @@ class MainViewModel(
             updateUrl.emit(
                 try {
                     val response = when {
-                        networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                        networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                             val response = suspendCancellableCoroutine { continuation ->
-                                httpEngine.value!!.newUrlRequestBuilder(url, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation)).build().start()
+                                val timeout = NetworkUtils.HttpEngineTimeout()
+                                val request = httpEngine.value!!.newUrlRequestBuilder(
+                                    url,
+                                    cronetExecutor.value,
+                                    NetworkUtils.ByteArrayUrlCallback(continuation, timeout)
+                                ).build()
+                                timeout.start(request, continuation)
+                                request.start()
+                                continuation.invokeOnCancellation {
+                                    request.cancel()
+                                    timeout.stop()
+                                }
                             }
-                            json.decodeFromString<JsonObject>(String(response.second))
+                            json.decodeFromString<JsonObject>(response.body.decodeToString())
                         }
                         networkLibrary == C.CRONET && cronetEngine.value != null -> {
                             val response = suspendCancellableCoroutine { continuation ->
-                                cronetEngine.value!!.newUrlRequestBuilder(url, NetworkUtils.byteArrayCronetUrlCallback(continuation), cronetExecutor.value).build().start()
+                                val timeout = NetworkUtils.CronetTimeout()
+                                val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                    url,
+                                    NetworkUtils.ByteArrayCronetCallback(continuation, timeout),
+                                    cronetExecutor.value
+                                ).build()
+                                timeout.start(request, continuation)
+                                request.start()
+                                continuation.invokeOnCancellation {
+                                    request.cancel()
+                                    timeout.stop()
+                                }
                             }
-                            json.decodeFromString<JsonObject>(String(response.second))
+                            json.decodeFromString<JsonObject>(response.body.decodeToString())
                         }
                         else -> {
                             okHttpClient.value.newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
@@ -914,7 +1178,9 @@ class MainViewModel(
                     response["assets"]?.jsonArray?.find {
                         it.jsonObject.getValue("content_type").jsonPrimitive.contentOrNull == "application/vnd.android.package-archive"
                     }?.jsonObject?.let { obj ->
-                        obj.getValue("updated_at").jsonPrimitive.contentOrNull?.let { TwitchApiHelper.parseIso8601DateUTC(it) }?.let {
+                        obj.getValue("updated_at").jsonPrimitive.contentOrNull?.let {
+                            Instant.parseOrNull(it)?.toEpochMilliseconds()?.takeIf { ms -> ms > 0 }
+                        }?.let {
                             if (it > lastChecked) {
                                 updateSize = obj["size"]?.jsonPrimitive?.longOrNull
                                 obj.getValue("browser_download_url").jsonPrimitive.contentOrNull
@@ -938,25 +1204,47 @@ class MainViewModel(
                     }
                 }
                 val response = when {
-                    networkLibrary == C.HTTP_ENGINE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 7 && httpEngine.value != null -> {
+                    networkLibrary == C.HTTP_ENGINE && httpEngine.value != null -> @SuppressLint("NewApi") {
                         val response = suspendCancellableCoroutine { continuation ->
-                            httpEngine.value!!.newUrlRequestBuilder(url, cronetExecutor.value, NetworkUtils.byteArrayUrlCallback(continuation, progressListener)).build().start()
+                            val timeout = NetworkUtils.HttpEngineTimeout()
+                            val request = httpEngine.value!!.newUrlRequestBuilder(
+                                url,
+                                cronetExecutor.value,
+                                NetworkUtils.ByteArrayUrlCallback(continuation, timeout, progressListener)
+                            ).build()
+                            timeout.start(request, continuation)
+                            request.start()
+                            continuation.invokeOnCancellation {
+                                request.cancel()
+                                timeout.stop()
+                            }
                         }
-                        if (response.first.httpStatusCode in 200..299) {
-                            response.second
+                        if (response.info.httpStatusCode in 200..299) {
+                            response.body
                         } else null
                     }
                     networkLibrary == C.CRONET && cronetEngine.value != null -> {
                         val response = suspendCancellableCoroutine { continuation ->
-                            cronetEngine.value!!.newUrlRequestBuilder(url, NetworkUtils.byteArrayCronetUrlCallback(continuation, progressListener), cronetExecutor.value).build().start()
+                            val timeout = NetworkUtils.CronetTimeout()
+                            val request = cronetEngine.value!!.newUrlRequestBuilder(
+                                url,
+                                NetworkUtils.ByteArrayCronetCallback(continuation, timeout, progressListener),
+                                cronetExecutor.value
+                            ).build()
+                            timeout.start(request, continuation)
+                            request.start()
+                            continuation.invokeOnCancellation {
+                                request.cancel()
+                                timeout.stop()
+                            }
                         }
-                        if (response.first.httpStatusCode in 200..299) {
-                            response.second
+                        if (response.info.httpStatusCode in 200..299) {
+                            response.body
                         } else null
                     }
                     else -> {
                         okHttpClient.value.newBuilder().apply {
-                            addNetworkInterceptor(NetworkUtils.progressInterceptor(progressListener))
+                            addNetworkInterceptor(NetworkUtils.ProgressInterceptor(progressListener))
                         }.build().newCall(Request.Builder().url(url).build()).executeAsync().use { response ->
                             if (response.isSuccessful) {
                                 response.body.bytes()

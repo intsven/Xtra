@@ -21,6 +21,7 @@ import androidx.core.content.edit
 import androidx.core.view.isVisible
 import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.Format
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -51,6 +52,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.floor
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(UnstableApi::class)
 class Media3Fragment : Media3PlayerFragment() {
@@ -196,15 +199,20 @@ class Media3Fragment : Media3PlayerFragment() {
                                 if (result.get().resultCode == SessionResult.RESULT_SUCCESS) {
                                     val list = result.get().extras.getStringArray(PlaybackService.NAMES)?.let { names ->
                                         result.get().extras.getStringArray(PlaybackService.CODECS)?.let { codecs ->
-                                            result.get().extras.getStringArray(PlaybackService.URLS)?.let { urls ->
-                                                names.mapIndexed { index, name ->
-                                                    VideoQuality(name, codecs.getOrNull(index).takeIf { it != "null" }, urls.getOrNull(index))
+                                            result.get().extras.getStringArray(PlaybackService.BITRATES)?.let { bitrates ->
+                                                result.get().extras.getStringArray(PlaybackService.URLS)?.let { urls ->
+                                                    names.mapIndexed { index, name ->
+                                                        VideoQuality(name, codecs.getOrNull(index).takeIf { it != "null" }, bitrates.getOrNull(index).takeIf { it != "null" }?.toIntOrNull(), urls.getOrNull(index))
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                     if (!list.isNullOrEmpty()) {
                                         viewModel.qualities = list.asSequence()
+                                            .sortedByDescending {
+                                                it.bitrate
+                                            }
                                             .sortedByDescending {
                                                 it.name?.substringAfter("p", "")?.takeWhile { it.isDigit() }?.toIntOrNull()
                                             }
@@ -215,12 +223,11 @@ class Media3Fragment : Media3PlayerFragment() {
                                                 add(0, VideoQuality(AUTO_QUALITY))
                                                 find { it.name.equals("source", true) }?.let { source ->
                                                     remove(source)
-                                                    add(1, VideoQuality(SOURCE_QUALITY, source.codecs, source.url))
+                                                    add(1, VideoQuality(SOURCE_QUALITY, source.codecs, source.bitrate, source.url))
                                                 }
-                                                val audio = find { it.name?.startsWith("audio", true) == true }?.also {
-                                                    remove(it)
-                                                }
-                                                add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.url))
+                                                val audio = find { it.name?.startsWith("audio", true) == true }
+                                                audio?.let { remove(it) }
+                                                add(VideoQuality(AUDIO_ONLY_QUALITY, audio?.codecs, audio?.bitrate, audio?.url))
                                                 if (videoType == STREAM) {
                                                     add(VideoQuality(CHAT_ONLY_QUALITY))
                                                 }
@@ -280,7 +287,7 @@ class Media3Fragment : Media3PlayerFragment() {
                                                         viewModel.usingProxy = true
                                                         viewLifecycleOwner.lifecycleScope.launch {
                                                             for (i in 0 until 10) {
-                                                                delay(10000)
+                                                                delay(10.seconds)
                                                                 if (!viewModel.checkPlaylist(requireContext().prefs().getString(C.NETWORK_LIBRARY, C.OKHTTP), playlist)) {
                                                                     break
                                                                 }
@@ -357,7 +364,7 @@ class Media3Fragment : Media3PlayerFragment() {
                                                     Toast.makeText(requireContext(), R.string.proxy_error, Toast.LENGTH_LONG).show()
                                                     viewModel.useCustomProxy = false
                                                     viewLifecycleOwner.lifecycleScope.launch {
-                                                        delay(1500L)
+                                                        delay(1500.milliseconds)
                                                         try {
                                                             restartPlayer()
                                                         } catch (e: Exception) {
@@ -367,7 +374,7 @@ class Media3Fragment : Media3PlayerFragment() {
                                                 else -> {
                                                     Toast.makeText(requireContext(), R.string.player_error, Toast.LENGTH_SHORT).show()
                                                     viewLifecycleOwner.lifecycleScope.launch {
-                                                        delay(1500L)
+                                                        delay(1500.milliseconds)
                                                         try {
                                                             restartPlayer()
                                                         } catch (e: Exception) {
@@ -405,7 +412,7 @@ class Media3Fragment : Media3PlayerFragment() {
                                                 else -> {
                                                     Toast.makeText(requireContext(), R.string.player_error, Toast.LENGTH_SHORT).show()
                                                     viewLifecycleOwner.lifecycleScope.launch {
-                                                        delay(1500L)
+                                                        delay(1500.milliseconds)
                                                         try {
                                                             player?.prepare()
                                                         } catch (e: Exception) {
@@ -665,12 +672,14 @@ class Media3Fragment : Media3PlayerFragment() {
                 if (textTracks.isSelected) {
                     subtitles.setImageResource(androidx.media3.ui.R.drawable.exo_ic_subtitle_on)
                     subtitles.setOnClickListener {
+                        showController(force = true)
                         toggleSubtitles(false)
                         requireContext().prefs().edit { putBoolean(C.PLAYER_SUBTITLES_ENABLED, false) }
                     }
                 } else {
                     subtitles.setImageResource(androidx.media3.ui.R.drawable.exo_ic_subtitle_off)
                     subtitles.setOnClickListener {
+                        showController(force = true)
                         toggleSubtitles(true)
                         requireContext().prefs().edit { putBoolean(C.PLAYER_SUBTITLES_ENABLED, true) }
                     }
@@ -813,27 +822,32 @@ class Media3Fragment : Media3PlayerFragment() {
                                     setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, false)
                                     binding.playerSurface.visibility = View.VISIBLE
                                     if (!player.currentTracks.isEmpty) {
-                                        player.currentTracks.groups.find { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }?.let {
+                                        player.currentTracks.groups.find { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }?.let { trackGroup ->
                                             val selectedQuality = quality.name?.split("p")
                                             val targetResolution = selectedQuality?.getOrNull(0)?.takeWhile { it.isDigit() }?.toIntOrNull()
                                             val targetFps = selectedQuality?.getOrNull(1)?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 30
-                                            if (it.mediaTrackGroup.length > 0) {
+                                            val targetBitrate = quality.bitrate
+                                            if (trackGroup.mediaTrackGroup.length > 0) {
                                                 if (targetResolution != null) {
-                                                    val formats = mutableListOf<Triple<Int, Int, Float>>()
-                                                    for (i in 0 until it.mediaTrackGroup.length) {
-                                                        val format = it.mediaTrackGroup.getFormat(i)
-                                                        formats.add(Triple(i, format.height, format.frameRate))
+                                                    val formats = mutableListOf<Pair<Int, Format>>()
+                                                    for (i in 0 until trackGroup.mediaTrackGroup.length) {
+                                                        formats.add(i to trackGroup.mediaTrackGroup.getFormat(i))
                                                     }
-                                                    val list = formats.sortedWith(
-                                                        compareByDescending<Triple<Int, Int, Float>> { it.third }.thenByDescending { it.second }
-                                                    )
+                                                    val list = formats
+                                                        .sortedByDescending { it.second.bitrate }
+                                                        .sortedByDescending { it.second.frameRate }
+                                                        .sortedByDescending { it.second.height }
                                                     list.find {
-                                                        (targetResolution == it.second && targetFps >= floor(it.third)) || targetResolution > it.second || it == list.last()
+                                                        (targetResolution == it.second.height
+                                                                && targetFps >= floor(it.second.frameRate)
+                                                                && (targetBitrate == null || targetBitrate >= it.second.bitrate))
+                                                                || targetResolution > it.second.height
+                                                                || it == list.last()
                                                     }?.first?.let { index ->
-                                                        setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, index))
+                                                        setOverrideForType(TrackSelectionOverride(trackGroup.mediaTrackGroup, index))
                                                     }
                                                 } else {
-                                                    setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, 0))
+                                                    setOverrideForType(TrackSelectionOverride(trackGroup.mediaTrackGroup, 0))
                                                 }
                                             }
                                         }
@@ -948,6 +962,7 @@ class Media3Fragment : Media3PlayerFragment() {
                         currentPosition = getCurrentPosition(),
                         qualityNames = qualities?.map { it.name.toString() }?.toTypedArray(),
                         qualityCodecs = qualities?.map { it.codecs.toString() }?.toTypedArray(),
+                        qualityBitrates = qualities?.map { it.bitrate.toString() }?.toTypedArray(),
                         qualityUrls = qualities?.map { it.url.toString() }?.toTypedArray(),
                     ).show(childFragmentManager, null)
                 }

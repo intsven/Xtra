@@ -14,6 +14,7 @@ import java.net.Socket
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.X509TrustManager
+import kotlin.time.Duration.Companion.seconds
 
 class ChatWriteIRCSocket(
     private val useSSL: Boolean,
@@ -33,19 +34,19 @@ class ChatWriteIRCSocket(
                 connect()
                 var line = reader?.readLine()
                 while (line != null) {
-                    line.run {
-                        when {
-                            contains("PRIVMSG") -> listener.onChatMessage(this, false)
-                            contains("USERNOTICE") -> listener.onChatMessage(this, true)
-                            contains("CLEARMSG") -> listener.onClearMessage(this)
-                            contains("CLEARCHAT") -> listener.onClearChat(this)
-                            contains("NOTICE") -> listener.onNotice(this)
-                            contains("ROOMSTATE") -> listener.onRoomState(this)
-                            contains("USERSTATE") -> listener.onUserState(this)
-                            startsWith("PING") -> {
-                                write("PONG :tmi.twitch.tv")
-                                writer?.flush()
-                            }
+                    if (line.startsWith("PING")) {
+                        write("PONG :tmi.twitch.tv")
+                        writer?.flush()
+                    } else {
+                        val ircMessage = ChatUtils.parseIRCMessage(line)
+                        when (ircMessage.command) {
+                            "PRIVMSG" -> listener.onChatMessage(ircMessage, false)
+                            "USERNOTICE" -> listener.onChatMessage(ircMessage, true)
+                            "CLEARMSG" -> listener.onClearMessage(ircMessage)
+                            "CLEARCHAT" -> listener.onClearChat(ircMessage)
+                            "NOTICE" -> listener.onNotice(ircMessage)
+                            "ROOMSTATE" -> listener.onRoomState(ircMessage)
+                            "USERSTATE" -> listener.onUserState(ircMessage)
                         }
                     }
                     line = reader?.readLine()
@@ -56,7 +57,7 @@ class ChatWriteIRCSocket(
                 }
             }
             close()
-            delay(1000)
+            delay(1.seconds)
         }
     }
 
