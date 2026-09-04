@@ -198,6 +198,8 @@ object C {
     const val PROXY_USER = "proxy_user"
     const val PROXY_PASSWORD = "proxy_password"
     const val ANIMATED_EMOTES = "animatedGifEmotes"
+    const val CHAT_SHOW_GIFS = "chat_show_gifs"
+    const val CHAT_GIF_HEIGHT = "chat_gif_height"
     const val CHAT_IMAGE_LIBRARY = "chat_image_library"
     const val CHAT_USE_WEBP = "chat_use_webp"
     const val CHAT_IMAGE_QUALITY = "chat_image_quality"

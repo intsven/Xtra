@@ -195,6 +195,8 @@ class ChatFragment : BaseNetworkFragment(), MessageClickedDialog.OnButtonClickLi
                             editText.clearFocus()
                             ImageClickedDialog.newInstance(url, name, format, isAnimated, source, thirdParty, emoteId).show(this@ChatFragment.childFragmentManager, "imageDialog")
                         },
+                        showGifs = requireContext().prefs().getBoolean(C.CHAT_SHOW_GIFS, true),
+                        gifHeight = requireContext().prefs().getString(C.CHAT_GIF_HEIGHT, "200")?.toIntOrNull() ?: 200,
                     )
                     recyclerView.let {
                         it.adapter = adapter

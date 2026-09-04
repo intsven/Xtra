@@ -76,6 +76,8 @@ class ChatAdapter(
     private val messageClickListener: ((String?) -> Unit)?,
     private val replyClickListener: (() -> Unit)?,
     private val imageClickListener: ((String?, String?, String?, Boolean?, Int?, Boolean?, String?) -> Unit)?,
+    private val showGifs: Boolean = false,
+    private val gifHeight: Int = 200,
 ) : RecyclerView.Adapter<ChatAdapter.ViewHolder>() {
 
     var translateAllMessages = false
@@ -102,7 +104,7 @@ class ChatAdapter(
             nameDisplay, useBoldNames, showNamePaints, namePaints, showSTVBadges, stvBadges, showPersonalEmotes, personalEmoteSets, stvUsers,
             enableOverlayEmotes, showSystemMessageEmotes, loggedInUser, chatUrl, getEmoteBytes, userColors, savedColors, translateAllMessages,
             translateMessage, showLanguageDownloadDialog, true, localTwitchEmotes, thirdPartyEmotes, globalBadges, channelBadges, cheerEmotes,
-            savedLocalTwitchEmotes, savedLocalBadges, savedLocalCheerEmotes, savedLocalEmotes
+            savedLocalTwitchEmotes, savedLocalBadges, savedLocalCheerEmotes, savedLocalEmotes, showGifs, gifHeight
         )
         holder.bind(chatMessage, result.builder)
         ChatAdapterUtils.loadImages(

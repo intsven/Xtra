@@ -10,6 +10,7 @@ class Image(
     val isAnimated: Boolean = false,
     val isEmote: Boolean = false,
     val thirdParty: Boolean = false,
+    val gifHeight: Int? = null,
     var overlayEmote: Image? = null,
     var start: Int,
     var end: Int,

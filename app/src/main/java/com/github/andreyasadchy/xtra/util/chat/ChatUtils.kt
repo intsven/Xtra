@@ -112,6 +112,27 @@ object ChatUtils {
                 }
             }
         }
+        val gifs = message.tags["gifs"]?.let { value ->
+            val userMessage = if (message.params.size >= 2) {
+                message.params.lastOrNull()
+            } else null
+            buildList {
+                value.split(',').forEach { gif ->
+                    val rangeSplit = gif.split("|")
+                    val range = rangeSplit.getOrNull(0)
+                    val id = rangeSplit.getOrNull(1)
+                    if (range != null && id != null) {
+                        val posSplit = range.split("-")
+                        val start = posSplit.getOrNull(0)?.toIntOrNull()
+                        val end = posSplit.getOrNull(1)?.toIntOrNull()
+                        if (start != null && end != null && userMessage != null) {
+                            val name = userMessage.substring(start, minOf(end + 1, userMessage.length))
+                            add(TwitchEmote(id = id, name = name, begin = start, end = end, format = "gif", isAnimated = true))
+                        }
+                    }
+                }
+            }
+        }
         val badges = message.tags["badges"]?.let { value ->
             value.split(',').mapNotNull { badge ->
                 val split = badge.split("/")
@@ -138,6 +159,7 @@ object ChatUtils {
             message = userMessage,
             color = message.tags["color"],
             emotes = emotes,
+            gifs = gifs,
             badges = badges,
             isAction = isAction,
             isFirst = message.tags["first-msg"] == "1",

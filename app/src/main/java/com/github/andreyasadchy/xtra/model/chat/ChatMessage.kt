@@ -9,6 +9,7 @@ class ChatMessage(
     val message: String? = null,
     val color: String? = null,
     val emotes: List<TwitchEmote>? = null,
+    val gifs: List<TwitchEmote>? = null,
     val badges: List<Badge>? = null,
     val isAction: Boolean = false,
     val isFirst: Boolean = false,

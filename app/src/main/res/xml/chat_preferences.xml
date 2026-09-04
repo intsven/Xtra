@@ -324,6 +324,13 @@
 
     <SwitchPreferenceCompat
         android:defaultValue="true"
+        android:key="chat_show_gifs"
+        android:title="@string/show_twitch_gifs"
+        app:iconSpaceReserved="false"
+        app:singleLineTitle="false" />
+
+    <SwitchPreferenceCompat
+        android:defaultValue="true"
         android:key="chat_zerowidth"
         android:title="@string/overlay_emotes"
         app:iconSpaceReserved="false"
@@ -342,5 +349,13 @@
         android:title="@string/disable_chat"
         app:iconSpaceReserved="false"
         app:singleLineTitle="false" />
+
+    <EditTextPreference
+        android:defaultValue="200"
+        android:key="chat_gif_height"
+        android:title="@string/chat_gif_height"
+        app:iconSpaceReserved="false"
+        app:singleLineTitle="false"
+        app:useSimpleSummaryProvider="true" />
 
 </androidx.preference.PreferenceScreen>

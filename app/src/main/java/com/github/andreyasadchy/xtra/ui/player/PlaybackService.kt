@@ -29,7 +29,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsManifest
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
@@ -461,7 +461,7 @@ class PlaybackService : MediaSessionService() {
                                         )
                                     ).apply {
                                         setPlaylistParserFactory(ExoPlayerService.CustomHlsPlaylistParserFactory())
-                                        setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(6))
+                                        setLoadErrorHandlingPolicy(NetworkAwareLoadErrorHandlingPolicy())
                                     }.createMediaSource(
                                         MediaItem.Builder().apply {
                                             setUri(uri?.toUri())

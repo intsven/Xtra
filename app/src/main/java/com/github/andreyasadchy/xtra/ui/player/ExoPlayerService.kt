@@ -57,7 +57,7 @@ import androidx.media3.exoplayer.hls.playlist.HlsMultivariantPlaylist
 import androidx.media3.exoplayer.hls.playlist.HlsPlaylist
 import androidx.media3.exoplayer.hls.playlist.HlsPlaylistParserFactory
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+
 import androidx.media3.exoplayer.upstream.ParsingLoadable
 import com.github.andreyasadchy.xtra.R
 import com.github.andreyasadchy.xtra.XtraApp
@@ -1046,7 +1046,7 @@ class ExoPlayerService : BasePlaybackService() {
                             )
                         ).apply {
                             setPlaylistParserFactory(CustomHlsPlaylistParserFactory())
-                            setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(6))
+                            setLoadErrorHandlingPolicy(NetworkAwareLoadErrorHandlingPolicy())
                         }.createMediaSource(
                             MediaItem.Builder().apply {
                                 setUri(url.toUri())
