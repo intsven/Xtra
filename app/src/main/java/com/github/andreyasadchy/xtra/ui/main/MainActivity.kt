@@ -704,6 +704,10 @@ class MainActivity : AppCompatActivity() {
             Intent.ACTION_VIEW -> {
                 val url = intent.data?.toString()
                 if (url != null) {
+                    val openInXtra = prefs.getBoolean(C.OPEN_TWITCH_LINKS_IN_XTRA, true)
+                    if (!openInXtra) {
+                        return
+                    }
                     when {
                         url.contains("twitch.tv/videos/") -> {
                             val id = url.substringAfter("twitch.tv/videos/").takeIf { it.isNotBlank() }?.let { it.substringBefore("?", it.substringBefore("/")) }

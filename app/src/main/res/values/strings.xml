@@ -116,6 +116,7 @@
     <string name="animated_emotes">Animated emotes</string>
     <string name="show_twitch_gifs">Show Twitch GIFs</string>
     <string name="chat_gif_height">GIF height (px)</string>
+    <string name="open_twitch_links_in_xtra">Open Twitch links in Xtra</string>
     <string name="sleep_timer">Sleep timer</string>
     <string name="start">Start</string>
     <string name="set">Set</string>

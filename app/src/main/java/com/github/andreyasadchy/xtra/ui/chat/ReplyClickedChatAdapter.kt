@@ -242,8 +242,19 @@ class ReplyClickedChatAdapter(
         val textView = itemView as TextView
 
         fun bind(chatMessage: ChatMessage, formattedMessage: SpannableStringBuilder) {
+            val intercepted = SpannableStringBuilder(formattedMessage)
+            val spans = intercepted.getSpans(0, intercepted.length, android.text.style.URLSpan::class.java)
+            for (span in spans) {
+                val start = intercepted.getSpanStart(span)
+                val end = intercepted.getSpanEnd(span)
+                val url = span.url
+                intercepted.removeSpan(span)
+                intercepted.setSpan(LinkClickableSpan(url) { linkUrl ->
+                    fragment.openLink(linkUrl)
+                }, start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             textView.apply {
-                text = formattedMessage
+                text = intercepted
                 textSize = messageTextSize
                 movementMethod = LinkMovementMethod.getInstance()
                 TooltipCompat.setTooltipText(this, chatMessage.message ?: chatMessage.systemMsg)

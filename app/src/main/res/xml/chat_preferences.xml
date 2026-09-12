@@ -358,4 +358,11 @@
         app:singleLineTitle="false"
         app:useSimpleSummaryProvider="true" />
 
+    <SwitchPreferenceCompat
+        android:defaultValue="true"
+        android:key="open_twitch_links_in_xtra"
+        android:title="@string/open_twitch_links_in_xtra"
+        app:iconSpaceReserved="false"
+        app:singleLineTitle="false" />
+
 </androidx.preference.PreferenceScreen>

@@ -10,3 +10,9 @@
 - If a tool times out, report it and move on — do NOT retry endlessly.
 - If you encounter repeated tool failures or hangs, stop and report the issue to the user.
 - Never let a tool block the session for more than its timeout. If the default (120s) would be hit, set a shorter explicit timeout.
+
+## Build Settings
+
+- Limit Gradle workers to 12 CPU cores: `org.gradle.workers.max=12` in `gradle.properties`
+- Gradle cache must use `D:\gradle_home` (`$env:GRADLE_USER_HOME = "D:\gradle_home"`)
+- Build command: `.\gradlew.bat assembleRelease`
