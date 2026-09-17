@@ -40,6 +40,7 @@ import com.github.andreyasadchy.xtra.util.prefs
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.mlkit.nl.translate.TranslateLanguage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -79,6 +80,7 @@ class MessageClickedDialog : BottomSheetDialogFragment(), IntegrityDialog.Listen
     var adapter: MessageClickedChatAdapter? = null
     private var isChatTouched = false
     private var messageLimit: Int? = null
+    private var pronounsJob: Job? = null
 
     override fun onAttach(context: Context) {
         super.onAttach(context)
@@ -291,6 +293,25 @@ class MessageClickedDialog : BottomSheetDialogFragment(), IntegrityDialog.Listen
     }
 
     private fun updateUserLayout(user: User) {
+        pronounsJob?.cancel()
+        binding.userPronouns.isVisible = false
+        binding.userPronouns.text = null
+        if (requireContext().prefs().getBoolean(C.CHAT_USER_PRONOUNS, false)) {
+            pronounsJob = viewLifecycleOwner.lifecycleScope.launch {
+                val text = viewModel.loadPronouns(user.login, requireContext().prefs().getBoolean(C.CHAT_USER_PRONOUNS, false))
+                if (!text.isNullOrBlank() && requireContext().prefs().getBoolean(C.CHAT_USER_PRONOUNS, false)) {
+                    with(binding) {
+                        userPronouns.text = getString(R.string.user_pronouns, text)
+                        userPronouns.isVisible = true
+                        userLayout.isVisible = true
+                        if (user.bannerImageURL != null) {
+                            userPronouns.setTextColor(Color.LTGRAY)
+                            userPronouns.setShadowLayer(4f, 0f, 0f, Color.BLACK)
+                        }
+                    }
+                }
+            }
+        }
         with(binding) {
             if (user.bannerImageURL != null) {
                 userLayout.visibility = View.VISIBLE

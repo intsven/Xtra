@@ -149,6 +149,9 @@
     <string name="when_logged_in">When logged in</string>
     <string name="show_scrolltop">Show scroll to top button</string>
     <string name="bold_usernames">Bold usernames</string>
+    <string name="show_user_pronouns">Show pronouns in user cards</string>
+    <string name="show_user_pronouns_summary">Look up self-selected pronouns using Alejo’s pronouns service when opening a user card. Sends the Twitch username, without your Twitch credentials.</string>
+    <string name="user_pronouns">Pronouns: %s</string>
     <string name="randomcolor">Random color for users without a color</string>
     <string name="message_limit">Message limit</string>
     <string name="player_defaultquality">Default player quality</string>

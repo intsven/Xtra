@@ -9,6 +9,7 @@ import com.github.andreyasadchy.xtra.XtraApp
 import com.github.andreyasadchy.xtra.model.ui.User
 import com.github.andreyasadchy.xtra.repository.GraphQLRepository
 import com.github.andreyasadchy.xtra.repository.HelixRepository
+import com.github.andreyasadchy.xtra.repository.PronounsRepository
 import com.github.andreyasadchy.xtra.util.C
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,12 +18,17 @@ import kotlinx.coroutines.launch
 class MessageClickedViewModel(
     private val graphQLRepository: GraphQLRepository,
     private val helixRepository: HelixRepository,
+    private val pronounsRepository: PronounsRepository,
 ) : ViewModel() {
 
     val integrity = MutableSharedFlow<String?>()
 
     val user = MutableStateFlow<Pair<User?, Boolean?>?>(null)
     private var isLoading = false
+
+    suspend fun loadPronouns(login: String?, enabled: Boolean): String? {
+        return if (enabled && !login.isNullOrBlank()) pronounsRepository.getPronouns(login) else null
+    }
 
     fun loadUser(channelId: String?, channelLogin: String?, targetId: String?, networkLibrary: String?, gqlHeaders: Map<String, String>, helixHeaders: Map<String, String>, enableIntegrity: Boolean) {
         if (user.value == null && !isLoading) {
@@ -83,7 +89,7 @@ class MessageClickedViewModel(
             initializer {
                 val application = (this[APPLICATION_KEY] as XtraApp)
                 val xtraModule = application.xtraModule
-                MessageClickedViewModel(xtraModule.graphQLRepository, xtraModule.helixRepository)
+                MessageClickedViewModel(xtraModule.graphQLRepository, xtraModule.helixRepository, xtraModule.pronounsRepository)
             }
         }
     }

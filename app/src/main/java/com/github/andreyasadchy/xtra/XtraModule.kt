@@ -19,6 +19,7 @@ import com.github.andreyasadchy.xtra.repository.LocalGameFollowsRepository
 import com.github.andreyasadchy.xtra.repository.NotificationsRepository
 import com.github.andreyasadchy.xtra.repository.OfflineVideosRepository
 import com.github.andreyasadchy.xtra.repository.PlayerRepository
+import com.github.andreyasadchy.xtra.repository.PronounsRepository
 import com.github.andreyasadchy.xtra.repository.RecentSearchesRepository
 import com.github.andreyasadchy.xtra.repository.SavedFiltersRepository
 import kotlinx.serialization.json.Json
@@ -342,6 +343,10 @@ class XtraModule(application: Application) {
 
     val playerRepository by lazy {
         PlayerRepository(httpEngine, cronetEngine, cronetExecutor, okHttpClient, json, database.recentEmotes(), database.translatedChannels(), database.videoPositions(), database.playbackStates(), graphQLRepository, helixRepository)
+    }
+
+    val pronounsRepository by lazy {
+        PronounsRepository(okHttpClient, json)
     }
 
     val recentSearchesRepository by lazy {

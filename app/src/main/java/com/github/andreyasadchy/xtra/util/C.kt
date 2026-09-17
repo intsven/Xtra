@@ -211,6 +211,7 @@ object C {
     const val CHAT_RANDOM_COLOR = "chat_randomcolor"
     const val CHAT_THEME_ADAPTED_USERNAME_COLOR = "chat_theme_adapted_username_color"
     const val CHAT_BOLD_NAMES = "chat_boldnames"
+    const val CHAT_USER_PRONOUNS = "chat_user_pronouns"
     const val CHAT_LIMIT = "chat_limit"
     const val CHAT_ZERO_WIDTH = "chat_zerowidth"
     const val CHAT_FIRST_MSG_VISIBILITY = "chat_firstmsg_visibility"
