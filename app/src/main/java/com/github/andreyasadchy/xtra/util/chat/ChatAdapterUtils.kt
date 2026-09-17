@@ -672,8 +672,9 @@ object ChatAdapterUtils {
                     val gifId = twitchGif.id
                     val gifUrl = "https://giphy.com/gifs/$gifId"
                     val gifName = twitchGif.name ?: value
+                    val gifRangeEnd = startIndex + twitchGif.end + 1
                     if (showGifs) {
-                        builder.replace(builderIndex, builderIndex + value.length, ".")
+                        builder.replace(builderIndex, gifRangeEnd, ".")
                         builder.setSpan(ForegroundColorSpan(Color.TRANSPARENT), builderIndex, builderIndex + 1, SPAN_EXCLUSIVE_EXCLUSIVE)
                         if (imageClick != null) {
                             builder.setSpan(object : ClickableSpan() {
@@ -694,8 +695,9 @@ object ChatAdapterUtils {
                             end = builderIndex + 1
                         )
                         images.add(image)
+                        val gifRangeLen = gifRangeEnd - builderIndex
                         if (twitchGifs.isNotEmpty()) {
-                            val removed = value.length - 1
+                            val removed = gifRangeLen - 1
                             twitchGifs.forEach {
                                 it.begin -= removed
                                 it.end -= removed
@@ -705,10 +707,11 @@ object ChatAdapterUtils {
                         builderIndex += 2
                     } else {
                         val linkText = "[$gifName] $gifUrl"
-                        builder.replace(builderIndex, builderIndex + value.length, linkText)
+                        builder.replace(builderIndex, gifRangeEnd, linkText)
                         builder.setSpan(URLSpan(gifUrl), builderIndex, builderIndex + linkText.length, SPAN_EXCLUSIVE_EXCLUSIVE)
+                        val gifRangeLen = gifRangeEnd - builderIndex
                         if (twitchGifs.isNotEmpty()) {
-                            val removed = value.length - linkText.length
+                            val removed = gifRangeLen - linkText.length
                             twitchGifs.forEach {
                                 it.begin -= removed
                                 it.end -= removed
